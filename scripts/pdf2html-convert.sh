@@ -180,14 +180,13 @@ python3 "$REPO_DIR/scripts/inject-overlay.py" \
     "$OUT_DIR/$OUT_NAME" "${PDF_NAME%.*}" "$OVERLAY_VERSION" \
     || fail "overlay injection failed"
 
-# Ensure static server is up
-if ! curl -sf "http://localhost:${PORT}/" >/dev/null 2>&1; then
-    log "starting http.server on :$PORT rooted at $CACHE_DIR"
-    (cd "$CACHE_DIR" && nohup python3 -m http.server "$PORT" >>"$LOG_FILE" 2>&1 &)
-    for i in $(seq 1 25); do
-        sleep 0.2
-        curl -sf "http://localhost:${PORT}/" >/dev/null 2>&1 && break
-    done
+# Verify the daemon is up. launchd owns it (phase 5) — this script must NOT
+# fall back to starting `python3 -m http.server`, because the daemon's GET /
+# returns 404 (no route matches the root), which would trick the old
+# fallback into spawning a second server on *:7435 that collides with the
+# IPv4-only daemon socket and serves half the requests.
+if ! curl -sf "http://localhost:${PORT}/healthz" >/dev/null 2>&1; then
+    fail "daemon unreachable on :${PORT} — check 'launchctl list | grep pdf_viewer'"
 fi
 
 ENCODED_NAME=$(python3 -c "import sys, urllib.parse as u; print(u.quote(sys.argv[1]))" "$OUT_NAME")
