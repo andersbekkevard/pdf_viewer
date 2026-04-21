@@ -38,8 +38,8 @@
         var pc = document.getElementById('page-container');
         if (!pc) return;
         var raw = localStorage.getItem('pdf2html-zoom');
-        var z = raw !== null ? parseFloat(raw) : 1.6;
-        if (!isFinite(z) || z <= 0) z = 1.6;
+        var z = raw !== null ? parseFloat(raw) : 1.4;
+        if (!isFinite(z) || z <= 0) z = 1.4;
         pc.style.zoom = String(z);
 
         window.__pdf2htmlSetZoom = function (n) {
