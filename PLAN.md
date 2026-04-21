@@ -94,7 +94,7 @@ else transparently.
 
 ---
 
-## 2. Current state (phases 1, 1.5, 2, 3, 4 done)
+## 2. Current state (phases 1, 1.5, 2, 3, 4, 5 done)
 
 **What works:**
 - Overlay extracted to proper files:
@@ -137,9 +137,15 @@ else transparently.
   streams PDF bytes as `application/pdf` (Chromium blocks http→file:
   redirects, so 307-to-file won't work). Content hashes memoized by
   (path, mtime_ns, size). Daemon never invokes Docker (ADR 0004).
+- **launchd autostart**: `launchd/com.anders.pdf_viewer.plist` symlinked
+  into `~/Library/LaunchAgents/` (symlink so repo edits propagate on
+  reload). LaunchAgent (user-level, no sudo). `RunAtLoad=true`,
+  `KeepAlive=true`, `ThrottleInterval=5s`. Verified: kill the daemon,
+  launchctl respawns it within seconds; reboot will bring it up on
+  login.
 
 **What doesn't work yet:**
-- launchd autostart / extension
+- Browser extension
 
 ---
 
@@ -349,14 +355,13 @@ genuinely separate work):
 - `<hash>/meta.json` per-entry metadata — wait until phase 7 visit
   tracking needs it.
 
-### Phase 5 — launchd autostart  ⏳ NEXT
-`launchd/com.anders.pdf_viewer.plist` keeps daemon alive on login with
-`KeepAlive=true`.
+### Phase 5 — launchd autostart  ✅ DONE
+`launchd/com.anders.pdf_viewer.plist` (LaunchAgent, user-level, no sudo).
+Symlinked into `~/Library/LaunchAgents/` so repo edits propagate on the
+next `launchctl kickstart -k gui/$UID/com.anders.pdf_viewer`. Install /
+uninstall commands live at the top of the plist file as comments.
 
-**DoD**: Reboot the Mac, daemon is reachable on `localhost:7435` without
-manual action.
-
-### Phase 6 — Browser extension (Comet MV3)
+### Phase 6 — Browser extension (Comet MV3)  ⏳ NEXT
 `extension/manifest.json` + `extension/rules.json`.
 
 Redirects `*.pdf$` URLs → `http://localhost:7435/view?url=<original>` via

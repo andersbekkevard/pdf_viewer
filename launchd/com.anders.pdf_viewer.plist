@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+    LaunchAgent for the pdf_viewer FastAPI daemon.
+
+    Symlinked into ~/Library/LaunchAgents/ so edits here propagate on reload
+    without needing to re-copy. Loaded once via:
+
+        launchctl bootstrap gui/$UID \
+            ~/Library/LaunchAgents/com.anders.pdf_viewer.plist
+
+    Uninstall:
+
+        launchctl bootout gui/$UID/com.anders.pdf_viewer
+
+    Force restart after editing:
+
+        launchctl kickstart -k gui/$UID/com.anders.pdf_viewer
+
+    Logs stream to ~/.cache/pdf_viewer/daemon.log (shared with the convert
+    scripts' log directory; separate filename so conversion output stays
+    grep-able).
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.anders.pdf_viewer</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/andersbekkevard/.local/bin/uv</string>
+        <string>run</string>
+        <string>--directory</string>
+        <string>/Users/andersbekkevard/dev/misc/pdf_viewer/daemon</string>
+        <string>uvicorn</string>
+        <string>main:app</string>
+        <string>--host</string>
+        <string>127.0.0.1</string>
+        <string>--port</string>
+        <string>7435</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>ThrottleInterval</key>
+    <integer>5</integer>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/andersbekkevard/dev/misc/pdf_viewer/daemon</string>
+
+    <key>StandardOutPath</key>
+    <string>/Users/andersbekkevard/.cache/pdf_viewer/daemon.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/andersbekkevard/.cache/pdf_viewer/daemon.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/Users/andersbekkevard/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <key>HOME</key>
+        <string>/Users/andersbekkevard</string>
+    </dict>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>
