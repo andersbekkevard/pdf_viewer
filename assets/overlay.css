@@ -10,10 +10,11 @@ html, body, #page-container {
     background: #282828 !important;
 }
 
-::selection, ::-moz-selection {
-    background: #99C1DA;
-    color: #000;
-}
+/* Must be two separate rules: if ::-moz-selection is in a comma list with
+   ::selection, Chromium treats the whole selector list as invalid and drops
+   the rule — text selection falls back to the Chrome-blue default. */
+::selection     { background: #99C1DA; color: #000; }
+::-moz-selection { background: #99C1DA; color: #000; }
 
 
 /* ---- Render window control ---------------------------------------------------
@@ -27,11 +28,16 @@ html, body, #page-container {
 
 
 /* ---- Sidebar visibility toggle ----
-   Hidden by default; body.sidebar-shown reveals it. Both rules use !important
-   so they beat pdf2htmlEX's positioning. */
+   Hidden by default; body.sidebar-shown reveals it. We need BOTH the
+   negative rule (to beat pdf2htmlEX in the hidden state) AND the positive
+   rule (to beat pdf2htmlEX's own `#sidebar { display: none }` in the
+   shown state). Without the affirmative rule, pdf2htmlEX's default wins
+   once `:not(.sidebar-shown)` stops matching and the toggle appears dead. */
 
-body:not(.sidebar-shown) #sidebar        { display: none !important; }
-body:not(.sidebar-shown) #page-container { left: 0       !important; }
+body:not(.sidebar-shown) #sidebar        { display: none  !important; }
+body:not(.sidebar-shown) #page-container { left: 0        !important; }
+body.sidebar-shown       #sidebar        { display: block !important; }
+body.sidebar-shown       #page-container { left: 250px    !important; }
 
 
 /* ---- Floating ☰ sidebar-toggle button (top-left) ---- */
