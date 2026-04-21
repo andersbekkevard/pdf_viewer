@@ -94,7 +94,7 @@ else transparently.
 
 ---
 
-## 2. Current state (phases 1, 1.5, 2, 3 done)
+## 2. Current state (phases 1, 1.5, 2, 3, 4 done)
 
 **What works:**
 - Overlay extracted to proper files:
@@ -130,9 +130,16 @@ else transparently.
   single text argument (absolute path or `~/...`). Verified end-to-end on
   a 3-PDF test folder: cold run → 2 converted + 1 skipped (content-hash
   dedup of the duplicate), warm run → 0 converted + 3 skipped.
+- **FastAPI daemon** (`daemon/main.py`, uv project): read-only service
+  over the cache dir. Routes: `GET /view?path=` / `GET /view?url=` /
+  `GET /_assets/*` / `GET /<hash>/<file>` / `GET /healthz`. Cache hit
+  ≈1–3ms. `/view?url=` miss → 307 to original URL; `/view?path=` miss →
+  streams PDF bytes as `application/pdf` (Chromium blocks http→file:
+  redirects, so 307-to-file won't work). Content hashes memoized by
+  (path, mtime_ns, size). Daemon never invokes Docker (ADR 0004).
 
 **What doesn't work yet:**
-- Daemon / extension / autostart
+- launchd autostart / extension
 
 ---
 
@@ -314,24 +321,35 @@ with `pdf2html-convert.sh` via `scripts/inject-overlay.py`.
 `raycast_scripts/other/pdf-viewer-index-directory.sh` (takes a text arg for
 the folder path, handles leading `~`). See §2 for behavior summary.
 
-### Phase 4 — FastAPI daemon  ⏳ NEXT
-Replaces bash script + `python -m http.server` with a proper Python daemon.
+### Phase 4 — FastAPI daemon  ✅ DONE
+**Scope narrowed during implementation.** Original phase plan listed
+`POST /convert` and `POST /index` endpoints, which contradict ADR 0004
+("the daemon never invokes Docker — never"). We followed the ADR: the
+daemon is read-only. Conversion stays in Raycast scripts, which is also
+where the scary expensive-dependency is kept.
 
-**Routes**:
-- `GET  /view?path=<local>` — cached HTML or 307 to `file://path`
-- `GET  /view?url=<remote>` — cached HTML or 307 to `<remote>`
-- `POST /convert?path=…` / `POST /convert?url=…` — runs docker, caches,
-  302 → `/view`
-- `POST /index?dir=…` — bulk convert subroutine
-- `GET  /_assets/*` — serves overlay files
+Actual routes (`daemon/main.py`):
+- `GET /view?path=<local>` — cache hit serves HTML; miss streams the PDF
+  bytes as `application/pdf` because Chromium blocks http→file:
+  redirects.
+- `GET /view?url=<remote>` — cache hit serves HTML; miss 307s back to
+  the original URL so the native viewer handles it.
+- `GET /_assets/*` — overlay.{css,js} from the repo assets dir (so edits
+  go live on refresh, no restart).
+- `GET /<hash>/<file>` — falls through to a StaticFiles mount on
+  `~/.cache/pdf_viewer/`, serving cached pdf2htmlEX bundles at the same
+  URL the Raycast convert script already points Comet at.
+- `GET /healthz` — liveness + entry count.
 
-**Metadata file** per cache entry: `<hash>/meta.json` stores original URL
-or path, display name, conversion timestamp, engine used.
+Content hashes memoized by (path, mtime_ns, size), so repeat requests on
+a 40MB textbook re-hash exactly once per process lifetime.
 
-**DoD**: Raycast entrypoint collapses to `curl -X POST localhost:7435/convert?...`.
-Cache hit is < 50ms. Cache miss gracefully falls back to native viewer.
+Deferred to later phases (originally lumped into phase 4 but are
+genuinely separate work):
+- `<hash>/meta.json` per-entry metadata — wait until phase 7 visit
+  tracking needs it.
 
-### Phase 5 — launchd autostart
+### Phase 5 — launchd autostart  ⏳ NEXT
 `launchd/com.anders.pdf_viewer.plist` keeps daemon alive on login with
 `KeepAlive=true`.
 
