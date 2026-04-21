@@ -94,7 +94,7 @@ else transparently.
 
 ---
 
-## 2. Current state (phases 1 + 1.5 done)
+## 2. Current state (phases 1, 1.5, 2 done)
 
 **What works:**
 - Overlay extracted to proper files:
@@ -111,9 +111,18 @@ else transparently.
   Content-Disposition (RFC 5987) or URL path, then same conversion pipeline.
   Second visit of any signed URL for the same document hits cache, no Docker.
 - Old script still works on :7433 for A/B comparison
+- **Overlay injection extracted** to `scripts/inject-overlay.py` — shared
+  between `pdf2html-convert.sh` (on fresh conversions) and
+  `upgrade-cache.sh` (on bulk upgrades).
+- **`scripts/upgrade-cache.sh --mode={inject,reconvert}`**:
+  - `inject` re-runs the injector on every `<hash>/*.html` — no Docker,
+    seconds for the whole cache.
+  - `reconvert` re-runs pdf2htmlEX. For https entries it reuses
+    `<hash>/_source/*.pdf` (no re-download, since signed URLs often
+    can't be refetched); for file entries it uses the original path
+    from `mappings.tsv` and skips if missing.
 
 **What doesn't work yet:**
-- Upgrade-cache script
 - Bulk indexing
 - Daemon / extension / autostart
 
@@ -280,24 +289,19 @@ Extended `scripts/pdf2html-convert.sh` with a scheme-dispatch block: `file://`
 and `https?://` both funnel into the same docker conversion stage. See §2 for
 behavior summary.
 
-### Phase 2 — Upgrade-cache script  ⏳ NEXT
-`scripts/upgrade-cache.sh --mode={inject,reconvert}`.
+### Phase 2 — Upgrade-cache script  ✅ DONE
+`scripts/upgrade-cache.sh --mode={inject,reconvert}`. Shares the injector
+with `pdf2html-convert.sh` via `scripts/inject-overlay.py`.
 
-**Mode A (inject)**: walk every `~/.cache/pdf_viewer/<hash>/*.html`, strip
-prior `<link id="pdf2html-overlay-css">` / `<script id="pdf2html-overlay-js">`
-(and old inline `<style>`/`<script>` if any), re-inject fresh tags with
-bumped version. Also re-inject title + favicon if template changed. Fast,
-no PDF re-conversion.
+- `inject` walks `~/.cache/pdf_viewer/*/*.html`, re-runs the injector. No
+  Docker. Idempotent (strips prior id="pdf2html-*" tags first).
+- `reconvert` iterates `mappings.tsv`. https entries mount
+  `<hash>/_source/` (no re-download); file entries mount the dirname of the
+  original path (skipped if the source no longer exists). `find -maxdepth 1
+  ! -name '_source' -delete` clears prior pdf2htmlEX outputs while
+  preserving the cached source PDF.
 
-**Mode B (reconvert)**: re-read source path or download source URL from the
-cache entry's metadata, re-run pdf2htmlEX from scratch. Slow, requires
-Docker. Use when the underlying conversion flags/engine changes.
-
-**DoD**: `--mode=inject` brings all cached HTMLs up to current overlay
-format in under a minute. `--mode=reconvert` re-runs pdf2htmlEX on every
-entry, idempotent, preserves cache layout.
-
-### Phase 3 — Bulk directory indexer
+### Phase 3 — Bulk directory indexer  ⏳ NEXT
 `scripts/index-directory.sh <dir>`. Recursive `fd -e pdf . <dir>`, convert
 each PDF, skip already-cached.
 

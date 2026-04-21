@@ -174,46 +174,11 @@ if [[ ! -f "$OUT_DIR/$OUT_NAME" ]]; then
     log "convert done: $OUT_NAME"
 fi
 
-# Inject title, favicon, and overlay <link>/<script> tags (idempotent)
-python3 - "$OUT_DIR/$OUT_NAME" "${PDF_NAME%.*}" "$OVERLAY_VERSION" <<'PY'
-import sys, re, pathlib, html as _html, urllib.parse as _up
-p = pathlib.Path(sys.argv[1])
-stem = _html.escape(sys.argv[2])
-version = sys.argv[3]
-html = p.read_text(encoding='utf-8', errors='ignore')
-
-# --- Title -----------------------------------------------------------------
-if re.search(r'<title>.*?</title>', html, flags=re.DOTALL):
-    html = re.sub(r'<title>.*?</title>', f'<title>{stem}</title>', html,
-                  count=1, flags=re.DOTALL)
-else:
-    html = html.replace('</head>', f'<title>{stem}</title></head>', 1)
-
-# --- Favicon ---------------------------------------------------------------
-html = re.sub(r'<link[^>]*\brel\s*=\s*["\']?(?:shortcut\s+)?icon["\'][^>]*>\s*',
-              '', html, flags=re.IGNORECASE)
-_svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><text y=".9em" font-size="90">📑</text></svg>'
-_favicon = f'<link id="pdf2html-favicon" rel="icon" href="data:image/svg+xml;utf8,{_up.quote(_svg)}">'
-if 'id="pdf2html-favicon"' in html:
-    html = re.sub(r'<link id="pdf2html-favicon"[^>]*>\s*', '', html)
-html = html.replace('</head>', _favicon + '</head>', 1)
-
-# --- Overlay link + script tags --------------------------------------------
-# Strip any prior inline/style injection (from the old hardcoded script) or
-# prior tag injection (for upgrades).
-html = re.sub(r'<style id="pdf2html-overlay-css">.*?</style>\s*',   '', html, flags=re.DOTALL)
-html = re.sub(r'<script id="pdf2html-overlay-js">.*?</script>\s*',  '', html, flags=re.DOTALL)
-html = re.sub(r'<link id="pdf2html-overlay-css"[^>]*>\s*',          '', html)
-html = re.sub(r'<script id="pdf2html-overlay-js"[^>]*></script>\s*', '', html)
-
-overlay_tags = (
-    f'<link id="pdf2html-overlay-css" rel="stylesheet" href="/_assets/overlay.css?v={version}">'
-    f'<script id="pdf2html-overlay-js" src="/_assets/overlay.js?v={version}" defer></script>'
-)
-html = html.replace('</head>', overlay_tags + '</head>', 1)
-
-p.write_text(html, encoding='utf-8')
-PY
+# Inject title, favicon, and overlay <link>/<script> tags (idempotent).
+# Same code also runs from upgrade-cache.sh --mode=inject.
+python3 "$REPO_DIR/scripts/inject-overlay.py" \
+    "$OUT_DIR/$OUT_NAME" "${PDF_NAME%.*}" "$OVERLAY_VERSION" \
+    || fail "overlay injection failed"
 
 # Ensure static server is up
 if ! curl -sf "http://localhost:${PORT}/" >/dev/null 2>&1; then
