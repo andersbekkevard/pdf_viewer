@@ -80,26 +80,59 @@ async function _runSync() {
         }
     }));
 
-    // Remove any dynamic rules we previously installed, then add the new set.
     // We only touch IDs >= DYNAMIC_RULE_ID_BASE so static rule IDs (1, 2)
     // are never disturbed.
-    const existing = await chrome.declarativeNetRequest.getDynamicRules();
+    let existing;
+    try {
+        existing = await chrome.declarativeNetRequest.getDynamicRules();
+    } catch (e) {
+        console.error('pdf_viewer: getDynamicRules failed —', e.message);
+        return;
+    }
+    if (!Array.isArray(existing)) {
+        console.warn('pdf_viewer: getDynamicRules returned non-array:', existing);
+        existing = [];
+    }
+
     const removeRuleIds = existing
-        .filter(r => r.id >= DYNAMIC_RULE_ID_BASE)
+        .filter(r => r && typeof r.id === 'number' && r.id >= DYNAMIC_RULE_ID_BASE)
         .map(r => r.id);
 
-    try {
-        await chrome.declarativeNetRequest.updateDynamicRules({
-            removeRuleIds,
-            addRules
-        });
-        console.log(
-            `pdf_viewer: synced ${addRules.length} cache entries ` +
-            `(${removeRuleIds.length} stale rules removed)`
-        );
-    } catch (e) {
-        console.error('pdf_viewer: updateDynamicRules failed —', e.message);
+    console.log(
+        `pdf_viewer: existing dynamic ids`,
+        existing.map(r => r && r.id),
+        `→ removing`, removeRuleIds
+    );
+
+    // Two-step update instead of one atomic call. Chromium has historically
+    // had a bug where an update that both removes id N and adds id N in the
+    // same call can fail with "Rule with id N does not have a unique ID" —
+    // the uniqueness check runs against the pre-removal state. Splitting into
+    // a remove call followed by an add call sidesteps this entirely.
+    if (removeRuleIds.length > 0) {
+        try {
+            await chrome.declarativeNetRequest.updateDynamicRules({
+                removeRuleIds
+            });
+        } catch (e) {
+            console.error('pdf_viewer: remove stage failed —', e.message);
+            return;
+        }
     }
+    if (addRules.length > 0) {
+        try {
+            await chrome.declarativeNetRequest.updateDynamicRules({
+                addRules
+            });
+        } catch (e) {
+            console.error('pdf_viewer: add stage failed —', e.message);
+            return;
+        }
+    }
+    console.log(
+        `pdf_viewer: synced ${addRules.length} cache entries ` +
+        `(${removeRuleIds.length} stale rules removed)`
+    );
 }
 
 // Fire on every plausible re-entry point, so new conversions become
