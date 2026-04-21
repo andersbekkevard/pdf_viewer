@@ -61,24 +61,55 @@ async function _runSync() {
         return;
     }
 
-    const addRules = entries.map((entry, i) => ({
-        id: DYNAMIC_RULE_ID_BASE + i,
-        priority: 3,
-        action: {
-            type: 'redirect',
-            redirect: {
-                regexSubstitution: `${DAEMON}/view?url=\\0`
-            }
-        },
-        condition: {
-            // Anchor on exact host+path. Accept any query string (signed
-            // URLs change the query on every visit but the host+path is
-            // stable — that's what the daemon hashes too).
-            regexFilter: `^https?://${escapeRegex(entry.host + entry.path)}(?:\\?.*)?$`,
-            resourceTypes: ['main_frame'],
-            excludedRequestDomains: ['localhost', '127.0.0.1']
+    const addRules = entries.map((entry, i) => {
+        const ruleId = DYNAMIC_RULE_ID_BASE + i;
+        if (entry.kind === 'file') {
+            // Chromium percent-encodes file:// paths segment-by-segment
+            // (spaces → %20, non-ASCII → UTF-8 %XX). Mirror that so the
+            // regex filter actually matches the encoded URL the browser
+            // ends up sending.
+            const encodedPath = entry.path
+                .split('/')
+                .map(encodeURIComponent)
+                .join('/');
+            return {
+                id: ruleId,
+                priority: 3,
+                action: {
+                    type: 'redirect',
+                    redirect: {
+                        // Static URL — daemon's /view?path= wants the raw
+                        // filesystem path, not a file:// URL, so we can't
+                        // reuse \0 here like the URL kind does.
+                        url: `${DAEMON}/view?path=${encodeURIComponent(entry.path)}`
+                    }
+                },
+                condition: {
+                    regexFilter: `^file://${escapeRegex(encodedPath)}(?:\\?.*)?$`,
+                    resourceTypes: ['main_frame']
+                }
+            };
         }
-    }));
+        // Default: URL kind.
+        return {
+            id: ruleId,
+            priority: 3,
+            action: {
+                type: 'redirect',
+                redirect: {
+                    regexSubstitution: `${DAEMON}/view?url=\\0`
+                }
+            },
+            condition: {
+                // Anchor on exact host+path. Accept any query string
+                // (signed URLs change the query on every visit but the
+                // host+path is stable — that's what the daemon hashes too).
+                regexFilter: `^https?://${escapeRegex(entry.host + entry.path)}(?:\\?.*)?$`,
+                resourceTypes: ['main_frame'],
+                excludedRequestDomains: ['localhost', '127.0.0.1']
+            }
+        };
+    });
 
     // We only touch IDs >= DYNAMIC_RULE_ID_BASE so static rule IDs (1, 2)
     // are never disturbed.

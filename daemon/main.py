@@ -81,13 +81,17 @@ def first_html(entry_dir: pathlib.Path) -> Optional[pathlib.Path]:
 
 @app.get("/cache-urls")
 def cache_urls():
-    """List every remote (http[s]) cache entry as {host, path, hash}.
+    """List every cache entry as a dict for the browser extension.
 
-    The browser extension fetches this on an interval and installs one
-    dynamic declarativeNetRequest rule per entry so that clicking on any
-    URL whose host+path matches a cached doc gets redirected into the HTML
-    viewer — even when the URL doesn't end in `.pdf` (e.g. Blackboard
-    signed URLs).
+    Two kinds:
+      - {"kind": "url",  "host": ..., "path": ..., "hash": ...}
+        → extension matches ^https?://<host><path>(?:\\?.*)?$
+      - {"kind": "file", "path": /absolute/path.pdf, "hash": ...}
+        → extension matches ^file://<url-encoded path>(?:\\?.*)?$
+
+    In both cases the rule redirects into the /view route. The path kind
+    requires the extension manifest to include file:///* host permissions
+    AND the user to toggle "Allow access to file URLs" per-extension.
     """
     map_file = CACHE_DIR / "mappings.tsv"
     if not map_file.is_file():
@@ -100,20 +104,28 @@ def cache_urls():
             if len(parts) < 4:
                 continue
             _ts, source_ref, hash_, _html_path = parts[:4]
-            if not source_ref.startswith(("http://", "https://")):
-                continue
             if hash_ in seen:
                 continue
             entry_dir = CACHE_DIR / hash_
             if not entry_dir.is_dir() or not list(entry_dir.glob("*.html")):
                 continue
-            parsed = urllib.parse.urlparse(source_ref)
-            entries.append({
-                "host": parsed.netloc.lower(),
-                "path": parsed.path,
-                "hash": hash_,
-            })
-            seen.add(hash_)
+
+            if source_ref.startswith(("http://", "https://")):
+                parsed = urllib.parse.urlparse(source_ref)
+                entries.append({
+                    "kind": "url",
+                    "host": parsed.netloc.lower(),
+                    "path": parsed.path,
+                    "hash": hash_,
+                })
+                seen.add(hash_)
+            elif source_ref.startswith("/"):
+                entries.append({
+                    "kind": "file",
+                    "path": source_ref,
+                    "hash": hash_,
+                })
+                seen.add(hash_)
     return entries
 
 
