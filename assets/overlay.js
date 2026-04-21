@@ -23,6 +23,30 @@
         mountRenderWindow();
         mountOutlineActiveTracker();
         mountPageCounter();
+        mountZoom();
+    }
+
+
+    // ------------------------------------------------------------------------
+    // Default zoom — pdf2htmlEX emits pages at the PDF's native size (~595px
+    // wide for A4), which leaves huge margins on a modern wide viewport.
+    // Apply a CSS `zoom` to #page-container on load so the default view
+    // fills more of the screen, closer to Chrome's fit-to-width. Persist to
+    // localStorage; tweak via `:zoom 1.8` palette command.
+    // ------------------------------------------------------------------------
+    function mountZoom() {
+        var pc = document.getElementById('page-container');
+        if (!pc) return;
+        var raw = localStorage.getItem('pdf2html-zoom');
+        var z = raw !== null ? parseFloat(raw) : 1.6;
+        if (!isFinite(z) || z <= 0) z = 1.6;
+        pc.style.zoom = String(z);
+
+        window.__pdf2htmlSetZoom = function (n) {
+            if (!isFinite(n) || n <= 0 || n > 10) return;
+            pc.style.zoom = String(n);
+            localStorage.setItem('pdf2html-zoom', String(n));
+        };
     }
 
 
@@ -131,6 +155,7 @@
             + '<tr><td>:all</td><td>Toggle render-all</td></tr>'
             + '<tr><td>:yank</td><td>Copy "Chapter · p. N" to clipboard</td></tr>'
             + '<tr><td>:counter</td><td>Toggle page counter</td></tr>'
+            + '<tr><td>:zoom 1.8</td><td>Set page-container zoom</td></tr>'
             + '<tr><td>:help</td><td>Show this help</td></tr>'
             + '</table>'
             + '<h3>USEFUL VIMIUM</h3><table>'
@@ -192,6 +217,7 @@
         else if (c === 'all')                                            toggleCheckboxAndFire('pdf2html-all-input');
         else if (c === 'yank' || c === 'y')                              yankCurrentLocation();
         else if (c === 'counter' || c === 'num')                         window.__pdf2htmlTogglePageno && window.__pdf2htmlTogglePageno();
+        else if (c === 'zoom' && arg !== undefined)                      window.__pdf2htmlSetZoom && window.__pdf2htmlSetZoom(parseFloat(arg));
         else if (c === 'help' || c === 'h')                              toggleCheatsheet();
     }
 
