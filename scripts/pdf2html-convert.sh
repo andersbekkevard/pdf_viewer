@@ -29,8 +29,14 @@ IMAGE="pdf2htmlex/pdf2htmlex:0.18.8.rc2-master-20200820-ubuntu-20.04-x86_64"
 OVERLAY_VERSION=1  # bump to bust browser cache of /_assets/overlay.*
 
 mkdir -p "$CACHE_DIR"
-# Silence stdio so Raycast doesn't raise notifications from subprocess output
-exec >>"$LOG_FILE" 2>&1
+# Tee stdout to the log AND let it reach Raycast's compact-mode output pane
+# so the user sees live progress. stderr stays log-only — docker/curl
+# warnings would spam the Raycast window otherwise.
+exec > >(tee -a "$LOG_FILE") 2>>"$LOG_FILE"
+
+# say <message> — print to stdout (Raycast sees it) AND log the same line.
+# Use this for progress messages the user should see live.
+say() { printf '%s\n' "$*"; }
 
 log() { printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >> "$LOG_FILE"; }
 
@@ -54,11 +60,7 @@ fail() {
     exit 1
 }
 
-# Fire an immediate "we got your click" toast so the user doesn't stare at
-# Raycast-closed-and-nothing-happened for the ~1-2s it takes to osascript
-# the tab URL, shasum a big PDF, and hit the cache check. Runs async so the
-# ~100ms osascript-startup doesn't block the script.
-(notify "Starting…" &) 2>/dev/null
+say "pdf_viewer: starting…"
 
 # Symlink assets into cache dir so http.server serves them at /_assets/*
 if [[ ! -L "$ASSET_LINK" ]]; then
@@ -110,6 +112,7 @@ elif [[ "$TAB_URL" =~ ^https?:// ]]; then
         OUT_NAME="${PDF_NAME%.*}.html"
     else
         mkdir -p "$PDF_DIR"
+        say "downloading source PDF…"
         notify "Downloading…" "Fetching source PDF from ${TAB_URL:0:60}"
         log "download start: $TAB_URL"
         if ! curl -fsSL --max-time 300 \
@@ -170,9 +173,10 @@ fi
 # Convert if not cached. Docker only consulted here, on actual cache miss.
 # -----------------------------------------------------------------------------
 if [[ ! -f "$OUT_DIR/$OUT_NAME" ]]; then
-    # Notify FIRST — docker info below can take 500ms-2s on a cold daemon,
-    # and waiting for that to finish before signaling "we're working" is
-    # exactly what makes the Raycast experience feel dead.
+    # Say / notify BEFORE the docker info check — that check itself takes
+    # 500ms-2s on a cold daemon, and waiting for it before signaling "we're
+    # working" is exactly what makes the Raycast experience feel dead.
+    say "converting $PDF_NAME (cache miss — may take 1-2 minutes)"
     notify "Converting $PDF_NAME" "Cache miss — may take up to ~2 minutes"
     if ! docker info >/dev/null 2>&1; then
         fail "Docker daemon not running — start Docker.app"
@@ -217,6 +221,7 @@ fi
 
 ENCODED_NAME=$(python3 -c "import sys, urllib.parse as u; print(u.quote(sys.argv[1]))" "$OUT_NAME")
 URL="http://localhost:${PORT}/${HASH}/${ENCODED_NAME}"
+say "opening: $PDF_NAME"
 
 # Upsert pdf→html mapping (dedupe on HASH — works for both file and url)
 {
