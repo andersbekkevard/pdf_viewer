@@ -1,0 +1,104 @@
+// pdf_viewer extension — dynamic rule sync.
+//
+// The static rules.json handles `.pdf$` URLs. This service worker handles
+// everything else: it fetches /cache-urls from the daemon and installs one
+// dynamic declarativeNetRequest rule per cached entry so that any URL whose
+// host+path matches a cached doc gets intercepted — even signed URLs like
+// Blackboard's that don't end in `.pdf`.
+//
+// Ordering: dynamic rules use priority 3, the static redirect uses 1, and
+// the passthrough allow uses 2. Highest priority wins, so:
+//   - cached URL click → dynamic (p3) → /view serves HTML
+//   - unknown `.pdf$` URL → static (p1) → /view 307s with marker
+//   - 307-target with marker → allow (p2) → native viewer
+//   - cache miss on non-.pdf URL → no rule → browser opens natively
+//
+// Service workers in MV3 can be terminated, so we use chrome.alarms (survives
+// suspension) rather than setInterval.
+
+const DAEMON = 'http://127.0.0.1:7435';
+const DYNAMIC_RULE_ID_BASE = 1000;
+const SYNC_ALARM = 'pdfviewer-sync';
+
+// Escape a string for inclusion inside a regex character class / pattern.
+// RE2 (what Chrome's declarativeNetRequest uses) honors the same special
+// characters as ECMAScript regex for escaping.
+function escapeRegex(s) {
+    return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+async function syncCachedRules() {
+    let entries;
+    try {
+        const resp = await fetch(`${DAEMON}/cache-urls`, { cache: 'no-store' });
+        if (!resp.ok) {
+            console.warn(`pdf_viewer: /cache-urls returned ${resp.status}`);
+            return;
+        }
+        entries = await resp.json();
+    } catch (e) {
+        // Daemon down, or CORS / network error. Leave any previously-installed
+        // rules in place — stale is better than an empty ruleset.
+        console.warn('pdf_viewer: /cache-urls fetch failed —', e.message);
+        return;
+    }
+
+    if (!Array.isArray(entries)) {
+        console.warn('pdf_viewer: /cache-urls returned non-array', entries);
+        return;
+    }
+
+    const addRules = entries.map((entry, i) => ({
+        id: DYNAMIC_RULE_ID_BASE + i,
+        priority: 3,
+        action: {
+            type: 'redirect',
+            redirect: {
+                regexSubstitution: `${DAEMON}/view?url=\\0`
+            }
+        },
+        condition: {
+            // Anchor on exact host+path. Accept any query string (signed
+            // URLs change the query on every visit but the host+path is
+            // stable — that's what the daemon hashes too).
+            regexFilter: `^https?://${escapeRegex(entry.host + entry.path)}(?:\\?.*)?$`,
+            resourceTypes: ['main_frame'],
+            excludedRequestDomains: ['localhost', '127.0.0.1']
+        }
+    }));
+
+    // Remove any dynamic rules we previously installed, then add the new set.
+    // We only touch IDs >= DYNAMIC_RULE_ID_BASE so static rule IDs (1, 2)
+    // are never disturbed.
+    const existing = await chrome.declarativeNetRequest.getDynamicRules();
+    const removeRuleIds = existing
+        .filter(r => r.id >= DYNAMIC_RULE_ID_BASE)
+        .map(r => r.id);
+
+    try {
+        await chrome.declarativeNetRequest.updateDynamicRules({
+            removeRuleIds,
+            addRules
+        });
+        console.log(
+            `pdf_viewer: synced ${addRules.length} cache entries ` +
+            `(${removeRuleIds.length} stale rules removed)`
+        );
+    } catch (e) {
+        console.error('pdf_viewer: updateDynamicRules failed —', e.message);
+    }
+}
+
+// Fire on every plausible re-entry point, so new conversions become
+// interceptable without a browser restart.
+chrome.runtime.onInstalled.addListener(syncCachedRules);
+chrome.runtime.onStartup.addListener(syncCachedRules);
+
+chrome.alarms.create(SYNC_ALARM, { periodInMinutes: 0.5 });
+chrome.alarms.onAlarm.addListener((alarm) => {
+    if (alarm.name === SYNC_ALARM) syncCachedRules();
+});
+
+// Also sync once on service-worker startup (covers the case where the SW
+// was terminated and got woken up by an event other than the ones above).
+syncCachedRules();

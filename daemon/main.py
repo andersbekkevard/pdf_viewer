@@ -79,6 +79,44 @@ def first_html(entry_dir: pathlib.Path) -> Optional[pathlib.Path]:
 # Routes
 # -----------------------------------------------------------------------------
 
+@app.get("/cache-urls")
+def cache_urls():
+    """List every remote (http[s]) cache entry as {host, path, hash}.
+
+    The browser extension fetches this on an interval and installs one
+    dynamic declarativeNetRequest rule per entry so that clicking on any
+    URL whose host+path matches a cached doc gets redirected into the HTML
+    viewer — even when the URL doesn't end in `.pdf` (e.g. Blackboard
+    signed URLs).
+    """
+    map_file = CACHE_DIR / "mappings.tsv"
+    if not map_file.is_file():
+        return []
+    entries = []
+    seen: set[str] = set()
+    with map_file.open(encoding="utf-8") as f:
+        for line in f:
+            parts = line.rstrip("\n").split("\t")
+            if len(parts) < 4:
+                continue
+            _ts, source_ref, hash_, _html_path = parts[:4]
+            if not source_ref.startswith(("http://", "https://")):
+                continue
+            if hash_ in seen:
+                continue
+            entry_dir = CACHE_DIR / hash_
+            if not entry_dir.is_dir() or not list(entry_dir.glob("*.html")):
+                continue
+            parsed = urllib.parse.urlparse(source_ref)
+            entries.append({
+                "host": parsed.netloc.lower(),
+                "path": parsed.path,
+                "hash": hash_,
+            })
+            seen.add(hash_)
+    return entries
+
+
 @app.get("/healthz")
 def healthz():
     entries = 0
