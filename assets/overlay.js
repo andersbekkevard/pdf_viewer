@@ -491,7 +491,9 @@
         el.innerHTML = '<span id="pdf2html-pageno-current">1</span> / ' + total;
         document.body.appendChild(el);
 
-        if (localStorage.getItem('pdf2html-pageno-hidden') === '1') {
+        // Default: hidden. Only show if the user has explicitly enabled it
+        // via ⌘⇧. or the `:counter` palette command (which writes '0').
+        if (localStorage.getItem('pdf2html-pageno-hidden') !== '0') {
             document.body.classList.add('pageno-hidden');
         }
         var cur = document.getElementById('pdf2html-pageno-current');
