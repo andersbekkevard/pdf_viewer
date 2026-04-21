@@ -34,8 +34,17 @@ exec >>"$LOG_FILE" 2>&1
 
 log() { printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >> "$LOG_FILE"; }
 
+# notify <message> [<subtitle>] — macOS Notification Center toast. Raycast's
+# silent mode doesn't surface its own UI during a run, so these are the only
+# visible progress signal the user gets; keep them timely.
 notify() {
-    osascript -e "display notification \"$1\" with title \"pdf_viewer\"" >/dev/null 2>&1
+    local msg="$1"
+    local subtitle="${2:-}"
+    if [[ -n "$subtitle" ]]; then
+        osascript -e "display notification \"$msg\" with title \"pdf_viewer\" subtitle \"$subtitle\"" >/dev/null 2>&1
+    else
+        osascript -e "display notification \"$msg\" with title \"pdf_viewer\"" >/dev/null 2>&1
+    fi
 }
 
 fail() {
@@ -44,6 +53,12 @@ fail() {
     notify "$1"
     exit 1
 }
+
+# Fire an immediate "we got your click" toast so the user doesn't stare at
+# Raycast-closed-and-nothing-happened for the ~1-2s it takes to osascript
+# the tab URL, shasum a big PDF, and hit the cache check. Runs async so the
+# ~100ms osascript-startup doesn't block the script.
+(notify "Starting…" &) 2>/dev/null
 
 # Symlink assets into cache dir so http.server serves them at /_assets/*
 if [[ ! -L "$ASSET_LINK" ]]; then
@@ -95,7 +110,7 @@ elif [[ "$TAB_URL" =~ ^https?:// ]]; then
         OUT_NAME="${PDF_NAME%.*}.html"
     else
         mkdir -p "$PDF_DIR"
-        notify "Downloading…"
+        notify "Downloading…" "Fetching source PDF from ${TAB_URL:0:60}"
         log "download start: $TAB_URL"
         if ! curl -fsSL --max-time 300 \
                 -D "$PDF_DIR/headers.txt" \
@@ -155,10 +170,13 @@ fi
 # Convert if not cached. Docker only consulted here, on actual cache miss.
 # -----------------------------------------------------------------------------
 if [[ ! -f "$OUT_DIR/$OUT_NAME" ]]; then
+    # Notify FIRST — docker info below can take 500ms-2s on a cold daemon,
+    # and waiting for that to finish before signaling "we're working" is
+    # exactly what makes the Raycast experience feel dead.
+    notify "Converting $PDF_NAME" "Cache miss — may take up to ~2 minutes"
     if ! docker info >/dev/null 2>&1; then
         fail "Docker daemon not running — start Docker.app"
     fi
-    notify "Converting $PDF_NAME…"
     log "convert start: $SOURCE_REF -> $OUT_DIR/$OUT_NAME"
     docker run --rm --platform linux/amd64 \
         -e LC_ALL=C.UTF-8 -e LANG=C.UTF-8 \
