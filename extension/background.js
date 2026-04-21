@@ -27,7 +27,20 @@ function escapeRegex(s) {
     return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-async function syncCachedRules() {
+// Serialize syncs — multiple listeners (onInstalled, onStartup, top-level
+// call, alarm) can fire within milliseconds of each other on extension load.
+// Without this, two concurrent calls both read getDynamicRules() → [], both
+// try to add id 1000, second one fails with "Rule with id 1000 does not have
+// a unique ID." The mutex collapses concurrent calls into one.
+let _syncInFlight = null;
+
+function syncCachedRules() {
+    if (_syncInFlight) return _syncInFlight;
+    _syncInFlight = _runSync().finally(() => { _syncInFlight = null; });
+    return _syncInFlight;
+}
+
+async function _runSync() {
     let entries;
     try {
         const resp = await fetch(`${DAEMON}/cache-urls`, { cache: 'no-store' });
