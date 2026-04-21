@@ -94,7 +94,7 @@ else transparently.
 
 ---
 
-## 2. Current state (phase 1 done)
+## 2. Current state (phases 1 + 1.5 done)
 
 **What works:**
 - Overlay extracted to proper files:
@@ -105,10 +105,14 @@ else transparently.
 - Port **7435**, cache **`~/.cache/pdf_viewer/`**, asset symlink wired
 - Local PDFs (`file://*.pdf`) convert and serve correctly, feature parity with
   the old hardcoded script
+- **Online URLs (`https://*.pdf`, including signed Blackboard/S3/CloudFront
+  URLs)**: host+path hash (query stripped), download to
+  `<hash>/_source/document.pdf`, magic-byte check, filename from
+  Content-Disposition (RFC 5987) or URL path, then same conversion pipeline.
+  Second visit of any signed URL for the same document hits cache, no Docker.
 - Old script still works on :7433 for A/B comparison
 
 **What doesn't work yet:**
-- Online URLs (`https://*.pdf` and signed URLs like Blackboard's)
 - Upgrade-cache script
 - Bulk indexing
 - Daemon / extension / autostart
@@ -271,26 +275,12 @@ on different port/cache.
 from repo assets, all existing features work (verified via A/B against old
 script).
 
-### Phase 1.5 — Online URL support  ⏳ NEXT
-Extend `scripts/pdf2html-convert.sh` to accept `https://` tab URLs in
-addition to `file://`.
+### Phase 1.5 — Online URL support  ✅ DONE
+Extended `scripts/pdf2html-convert.sh` with a scheme-dispatch block: `file://`
+and `https?://` both funnel into the same docker conversion stage. See §2 for
+behavior summary.
 
-**Tasks**:
-- Detect scheme: `file://` vs `https?://`
-- For `https://`: compute cache key = `sha256(host + path)[:16]`
-- Download PDF via `curl -fsSL` into `$OUT_DIR/_source/document.pdf`
-- Magic-byte check: first 4 bytes must be `%PDF`, else fail (handles the
-  "this signed URL isn't actually a PDF" case)
-- Extract filename from `response-content-disposition` query param first,
-  fall back to URL path's last segment
-- Rest of pipeline unchanged
-- Store source PDF in cache so phase-2 re-convert doesn't re-download
-
-**DoD**: Running the Raycast shortcut on a `https://…pdf` tab (including a
-Blackboard signed URL) produces the HTML viewer. Second visit of any signed
-URL for the same document hits cache.
-
-### Phase 2 — Upgrade-cache script
+### Phase 2 — Upgrade-cache script  ⏳ NEXT
 `scripts/upgrade-cache.sh --mode={inject,reconvert}`.
 
 **Mode A (inject)**: walk every `~/.cache/pdf_viewer/<hash>/*.html`, strip

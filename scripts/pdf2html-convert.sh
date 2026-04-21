@@ -54,29 +54,112 @@ fi
 # Get active tab URL from Comet
 TAB_URL=$(osascript -e 'tell application "Comet" to return URL of active tab of front window' 2>/dev/null)
 
-if [[ ! "$TAB_URL" =~ ^file://.*\.[pP][dD][fF]$ ]]; then
-    fail "Active tab is not a file:// PDF"
-fi
+# -----------------------------------------------------------------------------
+# Scheme dispatch. file:// and http(s):// both end up with:
+#   HASH, OUT_DIR, PDF_NAME, OUT_NAME, PDF_DIR (mount source), SOURCE_REF (log)
+# -----------------------------------------------------------------------------
+if [[ "$TAB_URL" =~ ^file://.*\.[pP][dD][fF]$ ]]; then
+    ENCODED_PATH="${TAB_URL#file://}"
+    LOCAL_PATH=$(python3 -c "import sys, urllib.parse as u; print(u.unquote(sys.argv[1]))" "$ENCODED_PATH")
+    [[ -f "$LOCAL_PATH" ]] || fail "PDF not found on disk"
 
-ENCODED_PATH="${TAB_URL#file://}"
-LOCAL_PATH=$(python3 -c "import sys, urllib.parse as u; print(u.unquote(sys.argv[1]))" "$ENCODED_PATH")
-[[ -f "$LOCAL_PATH" ]] || fail "PDF not found on disk"
-
-if ! docker info >/dev/null 2>&1; then
-    fail "Docker daemon not running — start Docker.app"
-fi
-
-# Stable per-file cache key (content hash, survives moves/renames)
-HASH=$(shasum -a 256 "$LOCAL_PATH" | awk '{print $1}' | head -c 16)
-PDF_NAME=$(basename "$LOCAL_PATH")
-OUT_NAME="${PDF_NAME%.*}.html"
-OUT_DIR="$CACHE_DIR/$HASH"
-mkdir -p "$OUT_DIR"
-
-if [[ ! -f "$OUT_DIR/$OUT_NAME" ]]; then
-    notify "Converting $PDF_NAME…"
-    log "convert start: $LOCAL_PATH -> $OUT_DIR/$OUT_NAME"
+    # Stable per-file cache key (content hash, survives moves/renames)
+    HASH=$(shasum -a 256 "$LOCAL_PATH" | awk '{print $1}' | head -c 16)
+    PDF_NAME=$(basename "$LOCAL_PATH")
+    OUT_NAME="${PDF_NAME%.*}.html"
+    OUT_DIR="$CACHE_DIR/$HASH"
     PDF_DIR=$(dirname "$LOCAL_PATH")
+    SOURCE_REF="$LOCAL_PATH"
+    mkdir -p "$OUT_DIR"
+
+elif [[ "$TAB_URL" =~ ^https?:// ]]; then
+    # host+path hash (query stripped, so signed URLs cache across sessions)
+    HASH=$(python3 -c "import sys,hashlib,urllib.parse as u; p=u.urlparse(sys.argv[1]); print(hashlib.sha256((p.netloc+p.path).encode()).hexdigest()[:16])" "$TAB_URL")
+    OUT_DIR="$CACHE_DIR/$HASH"
+    PDF_DIR="$OUT_DIR/_source"
+    SOURCE_REF="$TAB_URL"
+    mkdir -p "$OUT_DIR"
+
+    # Resolve PDF_NAME/OUT_NAME. Three cases:
+    #   1. fully cached (OUT_DIR has *.html)      → read name from html
+    #   2. _source has leftover *.pdf from a prior crashed convert → reuse
+    #   3. cold miss                               → download + parse filename
+    EXISTING_HTML=$(ls "$OUT_DIR"/*.html 2>/dev/null | head -1)
+    EXISTING_PDF=$(ls "$OUT_DIR/_source"/*.pdf 2>/dev/null | head -1)
+
+    if [[ -n "$EXISTING_HTML" ]]; then
+        OUT_NAME=$(basename "$EXISTING_HTML")
+        PDF_NAME="${OUT_NAME%.html}.pdf"
+    elif [[ -n "$EXISTING_PDF" ]]; then
+        PDF_NAME=$(basename "$EXISTING_PDF")
+        OUT_NAME="${PDF_NAME%.*}.html"
+    else
+        mkdir -p "$PDF_DIR"
+        notify "Downloading…"
+        log "download start: $TAB_URL"
+        if ! curl -fsSL --max-time 300 \
+                -D "$PDF_DIR/headers.txt" \
+                -o "$PDF_DIR/document.pdf" \
+                "$TAB_URL"; then
+            rm -rf "$OUT_DIR"
+            fail "Download failed"
+        fi
+
+        # Magic-byte sanity check (catches login pages from expired signed URLs)
+        MAGIC=$(head -c 4 "$PDF_DIR/document.pdf" 2>/dev/null)
+        if [[ "$MAGIC" != "%PDF" ]]; then
+            log "magic-byte check failed; first 200 bytes of $PDF_DIR/document.pdf:"
+            head -c 200 "$PDF_DIR/document.pdf" | od -c >>"$LOG_FILE" 2>&1
+            rm -rf "$OUT_DIR"
+            fail "Downloaded file is not a PDF (magic: ${MAGIC@Q})"
+        fi
+        log "download ok: $(du -h "$PDF_DIR/document.pdf" | cut -f1)"
+
+        # Filename: Content-Disposition → URL path → fallback
+        PDF_NAME=$(python3 - "$PDF_DIR/headers.txt" "$TAB_URL" <<'PY'
+import sys, re, email.message, urllib.parse as u
+headers_path, url = sys.argv[1], sys.argv[2]
+name = None
+try:
+    hdrs = open(headers_path, 'r', encoding='utf-8', errors='replace').read()
+    # curl -D captures all hops; keep the last Content-Disposition seen
+    matches = re.findall(r'(?im)^content-disposition:\s*(.+?)\s*$', hdrs)
+    if matches:
+        msg = email.message.Message()
+        msg['content-disposition'] = matches[-1]
+        name = msg.get_filename()
+except Exception:
+    pass
+if not name:
+    path = u.urlparse(url).path
+    name = path.rsplit('/', 1)[-1] or ''
+name = u.unquote(name or '').strip().replace('/', '_').replace('\\', '_').replace('\x00', '')
+if not name.lower().endswith('.pdf'):
+    name = (name + '.pdf') if name else 'document.pdf'
+if name in ('.pdf', '.', '..'):
+    name = 'document.pdf'
+print(name)
+PY
+        )
+        [[ -n "$PDF_NAME" ]] || PDF_NAME="document.pdf"
+        OUT_NAME="${PDF_NAME%.*}.html"
+        mv "$PDF_DIR/document.pdf" "$PDF_DIR/$PDF_NAME"
+        log "resolved filename: $PDF_NAME"
+    fi
+
+else
+    fail "Active tab is not a file:// or http(s):// PDF"
+fi
+
+# -----------------------------------------------------------------------------
+# Convert if not cached. Docker only consulted here, on actual cache miss.
+# -----------------------------------------------------------------------------
+if [[ ! -f "$OUT_DIR/$OUT_NAME" ]]; then
+    if ! docker info >/dev/null 2>&1; then
+        fail "Docker daemon not running — start Docker.app"
+    fi
+    notify "Converting $PDF_NAME…"
+    log "convert start: $SOURCE_REF -> $OUT_DIR/$OUT_NAME"
     docker run --rm --platform linux/amd64 \
         -e LC_ALL=C.UTF-8 -e LANG=C.UTF-8 \
         -v "$PDF_DIR":/pdf:ro \
@@ -145,12 +228,12 @@ fi
 ENCODED_NAME=$(python3 -c "import sys, urllib.parse as u; print(u.quote(sys.argv[1]))" "$OUT_NAME")
 URL="http://localhost:${PORT}/${HASH}/${ENCODED_NAME}"
 
-# Upsert pdf→html mapping (dedupe on PDF path)
+# Upsert pdf→html mapping (dedupe on HASH — works for both file and url)
 {
     if [[ -f "$MAP_FILE" ]]; then
-        awk -F'\t' -v p="$LOCAL_PATH" '$2 != p' "$MAP_FILE"
+        awk -F'\t' -v h="$HASH" '$3 != h' "$MAP_FILE"
     fi
-    printf '%s\t%s\t%s\t%s\n' "$(date -Iseconds)" "$LOCAL_PATH" "$HASH" "$OUT_DIR/$OUT_NAME"
+    printf '%s\t%s\t%s\t%s\n' "$(date -Iseconds)" "$SOURCE_REF" "$HASH" "$OUT_DIR/$OUT_NAME"
 } > "$MAP_FILE.tmp" && mv "$MAP_FILE.tmp" "$MAP_FILE"
 
 # Navigate current tab in-place so back-button returns to the source PDF
