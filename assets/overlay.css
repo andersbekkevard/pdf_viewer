@@ -164,21 +164,28 @@ body.sidebar-shown       #page-container { left: 250px    !important; }
 }
 
 
-/* ---- Command palette (press :) — vim ex-command bar at bottom ---- */
+/* ---- Command palette (press :) — vim ex-command bar at bottom ----
+   Two stacked rows: completion strip on top (nvim wildmenu), input line
+   below. The outer wrapper has the shadow/border; per-row padding lives
+   on each inner row. */
 
 #pdf2html-palette {
     position: fixed;
     left: 0; right: 0; bottom: 0;
     z-index: 10001;
     display: flex;
-    align-items: center;
-    gap: 6px;
-    padding: 8px 14px;
+    flex-direction: column;
     background: #111;
     color: #f0f0f0;
     border-top: 1px solid #333;
     font: 14px ui-monospace, SFMono-Regular, Menlo, monospace;
     box-shadow: 0 -6px 20px rgba(0, 0, 0, 0.5);
+}
+#pdf2html-palette-line {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 14px;
 }
 #pdf2html-palette-prompt {
     color: #99C1DA;
@@ -192,6 +199,35 @@ body.sidebar-shown       #page-container { left: 250px    !important; }
     color: #fff;
     font: inherit;
     caret-color: #99C1DA;
+}
+#pdf2html-palette-complete {
+    display: flex;
+    gap: 18px;
+    padding: 6px 14px;
+    overflow-x: auto;
+    white-space: nowrap;
+    border-bottom: 1px solid #2a2a2a;
+    font: 12px ui-monospace, SFMono-Regular, Menlo, monospace;
+    background: #0c0c0c;
+    scrollbar-width: thin;
+}
+.pdf2html-palette-match {
+    color: #888;
+    flex-shrink: 0;
+    cursor: pointer;
+}
+.pdf2html-palette-match:hover {
+    color: #ccc;
+}
+.pdf2html-palette-match-active {
+    color: #f5deb3;
+    font-weight: 700;
+}
+.pdf2html-palette-match-desc {
+    color: #555;
+    font-weight: 400;
+    margin-left: 6px;
+    font-style: italic;
 }
 
 

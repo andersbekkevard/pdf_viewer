@@ -144,7 +144,7 @@
             + '<tr><td>s or ⌘.</td><td>Toggle sidebar</td></tr>'
             + '<tr><td>A</td><td>Toggle render-all pages</td></tr>'
             + '<tr><td>⌘⇧.</td><td>Toggle page counter</td></tr>'
-            + '<tr><td>:</td><td>Open command palette</td></tr>'
+            + '<tr><td>:</td><td>Open command palette (Tab to autocomplete)</td></tr>'
             + '<tr><td>?</td><td>Toggle this help</td></tr>'
             + '<tr><td>Esc</td><td>Close overlay / clear selection</td></tr>'
             + '</table>'
@@ -183,26 +183,158 @@
 
 
     // ------------------------------------------------------------------------
-    // Command palette — : opens a vim-like ex-bar at the bottom.
+    // Command palette — : opens a vim-like ex-bar at the bottom, with
+    // nvim wildmenu-style autocomplete: Tab cycles matches, Shift+Tab
+    // reverses, commands + arguments are both completable.
+    //
+    // COMMANDS is the single source of truth for both the dispatcher and
+    // the completer. Extend by pushing a new entry here — one line per
+    // command, one line in the cheatsheet, done.
     // ------------------------------------------------------------------------
+    var COMMANDS = [
+        { name: 'page',    aliases: ['p'],    desc: 'goto page N',
+          argCompleter: null,
+          handler: function (a) { if (a) gotoPage(parseInt(a, 10)); } },
+        { name: 'pin',     aliases: [],       desc: 'cursor pin %',
+          argCompleter: function () { return ['25', '33', '50', '66', '75']; },
+          handler: function (a) { if (a !== undefined) setInputValueAndFire('pdf2html-pin-input', parseInt(a, 10)); } },
+        { name: 'buffer',  aliases: ['buf'],  desc: 'render ±N pages',
+          argCompleter: function () { return ['5', '10', '20', '50']; },
+          handler: function (a) { if (a !== undefined) setInputValueAndFire('pdf2html-buffer-input', parseInt(a, 10)); } },
+        { name: 'all',     aliases: [],       desc: 'toggle render-all',
+          argCompleter: null,
+          handler: function () { toggleCheckboxAndFire('pdf2html-all-input'); } },
+        { name: 'yank',    aliases: ['y'],    desc: 'copy "chapter · p. N"',
+          argCompleter: null,
+          handler: function () { yankCurrentLocation(); } },
+        { name: 'counter', aliases: ['num'],  desc: 'toggle page counter',
+          argCompleter: null,
+          handler: function () { if (window.__pdf2htmlTogglePageno) window.__pdf2htmlTogglePageno(); } },
+        { name: 'zoom',    aliases: [],       desc: 'set zoom N',
+          argCompleter: function () { return ['1.0', '1.2', '1.4', '1.6', '1.8', '2.0', '2.5']; },
+          handler: function (a) { if (a !== undefined && window.__pdf2htmlSetZoom) window.__pdf2htmlSetZoom(parseFloat(a)); } },
+        { name: 'help',    aliases: ['h'],    desc: 'show cheatsheet',
+          argCompleter: null,
+          handler: function () { toggleCheatsheet(); } },
+    ];
+
+    function findCommand(name) {
+        var n = name.toLowerCase();
+        for (var i = 0; i < COMMANDS.length; i++) {
+            if (COMMANDS[i].name === n || COMMANDS[i].aliases.indexOf(n) !== -1) return COMMANDS[i];
+        }
+        return null;
+    }
+
     function openPalette() {
         var ex = document.getElementById('pdf2html-palette');
         if (ex) { ex.remove(); return; }
+
         var wrap = document.createElement('div');
         wrap.id = 'pdf2html-palette';
-        wrap.innerHTML =
+
+        var completeRow = document.createElement('div');
+        completeRow.id = 'pdf2html-palette-complete';
+        wrap.appendChild(completeRow);
+
+        var lineRow = document.createElement('div');
+        lineRow.id = 'pdf2html-palette-line';
+        lineRow.innerHTML =
             '<span id="pdf2html-palette-prompt">:</span>' +
             '<input type="text" id="pdf2html-palette-input" autocomplete="off" spellcheck="false" autocapitalize="off">';
+        wrap.appendChild(lineRow);
         document.body.appendChild(wrap);
+
         var input = document.getElementById('pdf2html-palette-input');
+        var state = { matches: [], idx: -1 };
+
+        function computeMatches() {
+            var v = input.value;
+            var firstSpace = v.indexOf(' ');
+            if (firstSpace === -1) {
+                // Command-name completion — match canonical OR any alias.
+                state.matches = COMMANDS
+                    .filter(function (c) {
+                        if (c.name.indexOf(v) === 0) return true;
+                        return c.aliases.some(function (a) { return a.indexOf(v) === 0; });
+                    })
+                    .map(function (c) { return { value: c.name, desc: c.desc }; });
+            } else {
+                // Arg completion — dispatch to the command's argCompleter.
+                var head = v.slice(0, firstSpace);
+                var tail = v.slice(firstSpace + 1);
+                var cmd = findCommand(head);
+                if (cmd && cmd.argCompleter) {
+                    state.matches = cmd.argCompleter()
+                        .filter(function (a) { return String(a).indexOf(tail) === 0; })
+                        .map(function (a) { return { value: head + ' ' + a, display: String(a) }; });
+                } else {
+                    state.matches = [];
+                }
+            }
+            state.idx = -1;
+        }
+
+        function renderMatches() {
+            completeRow.innerHTML = '';
+            if (state.matches.length === 0) {
+                completeRow.style.display = 'none';
+                return;
+            }
+            completeRow.style.display = '';
+            state.matches.forEach(function (m, i) {
+                var span = document.createElement('span');
+                span.className = 'pdf2html-palette-match' +
+                    (i === state.idx ? ' pdf2html-palette-match-active' : '');
+                span.textContent = m.display || m.value;
+                if (m.desc) {
+                    var d = document.createElement('span');
+                    d.className = 'pdf2html-palette-match-desc';
+                    d.textContent = m.desc;
+                    span.appendChild(d);
+                }
+                // Mousedown (not click) so we fire before the input loses focus.
+                span.addEventListener('mousedown', function (ev) {
+                    ev.preventDefault();
+                    input.value = m.value;
+                    runCommand(input.value);
+                    wrap.remove();
+                });
+                completeRow.appendChild(span);
+            });
+            var active = completeRow.querySelector('.pdf2html-palette-match-active');
+            if (active && active.scrollIntoView) {
+                active.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+            }
+        }
+
+        function cycleMatch(delta) {
+            if (state.matches.length === 0) return;
+            var n = state.matches.length;
+            state.idx = ((state.idx + delta) % n + n) % n;
+            // Fill input with the match; don't recompute (we want cycling to
+            // stay in the current set of candidates).
+            input.value = state.matches[state.idx].value;
+            renderMatches();
+        }
+
         input.focus();
+        input.addEventListener('input', function () { computeMatches(); renderMatches(); });
         input.addEventListener('keydown', function (ev) {
             if (ev.key === 'Escape') {
                 ev.stopPropagation(); ev.preventDefault(); wrap.remove();
             } else if (ev.key === 'Enter') {
                 ev.preventDefault(); runCommand(input.value); wrap.remove();
+            } else if (ev.key === 'Tab') {
+                ev.preventDefault(); cycleMatch(ev.shiftKey ? -1 : 1);
             }
         });
+
+        // Show all commands by default on open — nvim user already knows
+        // what they want, but the discoverable surface is nice for anyone
+        // wandering in.
+        computeMatches();
+        renderMatches();
     }
 
     function runCommand(raw) {
@@ -210,15 +342,8 @@
         if (!parts[0]) return;
         // Bare number: `:42` = goto page 42
         if (/^\d+$/.test(parts[0])) { gotoPage(parseInt(parts[0], 10)); return; }
-        var c = parts[0].toLowerCase(), arg = parts[1];
-        if ((c === 'p' || c === 'page') && arg)                         gotoPage(parseInt(arg, 10));
-        else if (c === 'pin' && arg !== undefined)                       setInputValueAndFire('pdf2html-pin-input', parseInt(arg, 10));
-        else if ((c === 'buffer' || c === 'buf') && arg !== undefined)   setInputValueAndFire('pdf2html-buffer-input', parseInt(arg, 10));
-        else if (c === 'all')                                            toggleCheckboxAndFire('pdf2html-all-input');
-        else if (c === 'yank' || c === 'y')                              yankCurrentLocation();
-        else if (c === 'counter' || c === 'num')                         window.__pdf2htmlTogglePageno && window.__pdf2htmlTogglePageno();
-        else if (c === 'zoom' && arg !== undefined)                      window.__pdf2htmlSetZoom && window.__pdf2htmlSetZoom(parseFloat(arg));
-        else if (c === 'help' || c === 'h')                              toggleCheatsheet();
+        var cmd = findCommand(parts[0]);
+        if (cmd) cmd.handler(parts[1]);
     }
 
     function gotoPage(n) {
