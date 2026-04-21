@@ -196,6 +196,15 @@ python3 "$REPO_DIR/scripts/inject-overlay.py" \
     "$OUT_DIR/$OUT_NAME" "${PDF_NAME%.*}" "$OVERLAY_VERSION" \
     || fail "overlay injection failed"
 
+# Extract PDF metadata into <hash>/meta.json if missing. Failures are
+# non-fatal — plenty of PDFs have no /Author; we just end up with an
+# empty (or partial) meta.json that the overlay falls back from.
+if [[ ! -f "$OUT_DIR/meta.json" ]]; then
+    "$REPO_DIR/scripts/extract-pdf-meta.sh" \
+        "$PDF_DIR/$PDF_NAME" "$OUT_DIR/meta.json" \
+        || log "meta extraction failed for $PDF_NAME"
+fi
+
 # Verify the daemon is up. launchd owns it (phase 5) — this script must NOT
 # fall back to starting `python3 -m http.server`, because the daemon's GET /
 # returns 404 (no route matches the root), which would trick the old

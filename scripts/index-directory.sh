@@ -128,6 +128,15 @@ for idx in "${!PDFS[@]}"; do
         converted=$((converted + 1))
     fi
 
+    # Metadata — non-fatal if it fails. Written whether this was a fresh
+    # convert or a cache hit (covers entries converted before meta.json
+    # was plumbed in).
+    if [[ ! -f "$out_dir/meta.json" ]]; then
+        "$REPO_DIR/scripts/extract-pdf-meta.sh" "$pdf" "$out_dir/meta.json" \
+            >>"$LOG_FILE" 2>&1 \
+            || log "[${n}/${total}] meta extraction failed for $pdf"
+    fi
+
     # Upsert mapping (dedup on hash). Happens for cache hits too so that a
     # PDF moved to a new path refreshes its source_ref row.
     {

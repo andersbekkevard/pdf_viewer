@@ -21,7 +21,13 @@
 #       Slow and requires Docker. Use after an engine/flag change that
 #       materially affects pdf2htmlEX output.
 #
-# Neither mode mutates mappings.tsv — cache layout is preserved verbatim.
+#   --mode=meta
+#       Run pdfinfo on every cache entry's source PDF and write <hash>/meta.json.
+#       Uses local `pdfinfo` (brew install poppler) if present, falls back to
+#       the pdf2htmlEX Docker image. Idempotent — existing meta.json files are
+#       overwritten so bumps to the schema propagate cleanly.
+#
+# None of the modes mutate mappings.tsv — cache layout is preserved verbatim.
 # ============================================================================
 
 set -u
@@ -43,12 +49,14 @@ die() { printf 'error: %s\n' "$*" >&2; log "FAIL: $*"; exit 1; }
 
 usage() {
     cat <<EOF
-Usage: $(basename "$0") --mode=<inject|reconvert>
+Usage: $(basename "$0") --mode=<inject|reconvert|meta>
 
   --mode=inject      Re-inject title/favicon/overlay tags into every cached
                      <hash>/*.html. No Docker required.
   --mode=reconvert   Re-run pdf2htmlEX on every cache entry from its source
                      PDF. Requires Docker.
+  --mode=meta        Run pdfinfo on every cache entry's source PDF and
+                     write <hash>/meta.json. Idempotent.
 EOF
 }
 
@@ -63,8 +71,8 @@ while [[ $# -gt 0 ]]; do
 done
 
 case "$MODE" in
-    inject|reconvert) ;;
-    *) usage >&2; die "--mode is required (inject|reconvert)" ;;
+    inject|reconvert|meta) ;;
+    *) usage >&2; die "--mode is required (inject|reconvert|meta)" ;;
 esac
 
 # ----------------------------------------------------------------------------
@@ -178,5 +186,60 @@ if [[ "$MODE" == "reconvert" ]]; then
     done < "$MAP_FILE"
 
     say "upgrade-cache reconvert: $ok ok, $skipped skipped, $failed failed"
+    exit $(( failed > 0 ? 1 : 0 ))
+fi
+
+# ----------------------------------------------------------------------------
+# Mode: meta
+# ----------------------------------------------------------------------------
+if [[ "$MODE" == "meta" ]]; then
+    [[ -f "$MAP_FILE" ]] || die "mappings.tsv not found — nothing to reindex"
+
+    ok=0
+    skipped=0
+    failed=0
+    total=$(wc -l < "$MAP_FILE" | tr -d ' ')
+    say "meta: $total cache entries queued"
+
+    idx=0
+    while IFS=$'\t' read -r ts source_ref hash html_path; do
+        idx=$((idx + 1))
+        [[ -n "${hash:-}" ]] || { skipped=$((skipped + 1)); continue; }
+
+        out_dir="$CACHE_DIR/$hash"
+        if [[ ! -d "$out_dir" ]]; then
+            log "meta [$idx/$total] skip (no dir): $hash"
+            skipped=$((skipped + 1))
+            continue
+        fi
+
+        # Resolve source PDF by scheme.
+        if [[ "$source_ref" =~ ^https?:// ]]; then
+            pdf_path=$(ls "$out_dir/_source"/*.pdf 2>/dev/null | head -1)
+            if [[ -z "$pdf_path" ]]; then
+                log "meta [$idx/$total] skip (no cached source PDF): $source_ref"
+                skipped=$((skipped + 1))
+                continue
+            fi
+        else
+            if [[ ! -f "$source_ref" ]]; then
+                log "meta [$idx/$total] skip (source missing): $source_ref"
+                skipped=$((skipped + 1))
+                continue
+            fi
+            pdf_path="$source_ref"
+        fi
+
+        if "$REPO_DIR/scripts/extract-pdf-meta.sh" "$pdf_path" "$out_dir/meta.json" \
+                >>"$LOG_FILE" 2>&1; then
+            ok=$((ok + 1))
+            log "meta [$idx/$total] ok: $hash"
+        else
+            failed=$((failed + 1))
+            log "meta [$idx/$total] FAILED: $pdf_path"
+        fi
+    done < "$MAP_FILE"
+
+    say "upgrade-cache meta: $ok ok, $skipped skipped, $failed failed"
     exit $(( failed > 0 ? 1 : 0 ))
 fi
