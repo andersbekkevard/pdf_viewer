@@ -94,7 +94,7 @@ else transparently.
 
 ---
 
-## 2. Current state (phases 1, 1.5, 2 done)
+## 2. Current state (phases 1, 1.5, 2, 3 done)
 
 **What works:**
 - Overlay extracted to proper files:
@@ -121,9 +121,17 @@ else transparently.
     `<hash>/_source/*.pdf` (no re-download, since signed URLs often
     can't be refetched); for file entries it uses the original path
     from `mappings.tsv` and skips if missing.
+- **`scripts/index-directory.sh <folder>`**: recursive `fd -e pdf`, content-
+  hash each PDF, skip if any `*.html` already exists in that hash dir
+  (matters when the same book is present under two filenames), otherwise
+  run pdf2htmlEX + inject. Mappings upserted on both hit and miss so that
+  renaming a PDF refreshes its `source_ref` row. Raycast entrypoint lives
+  at `raycast_scripts/other/pdf-viewer-index-directory.sh` and takes a
+  single text argument (absolute path or `~/...`). Verified end-to-end on
+  a 3-PDF test folder: cold run → 2 converted + 1 skipped (content-hash
+  dedup of the duplicate), warm run → 0 converted + 3 skipped.
 
 **What doesn't work yet:**
-- Bulk indexing
 - Daemon / extension / autostart
 
 ---
@@ -301,14 +309,12 @@ with `pdf2html-convert.sh` via `scripts/inject-overlay.py`.
   ! -name '_source' -delete` clears prior pdf2htmlEX outputs while
   preserving the cached source PDF.
 
-### Phase 3 — Bulk directory indexer  ⏳ NEXT
-`scripts/index-directory.sh <dir>`. Recursive `fd -e pdf . <dir>`, convert
-each PDF, skip already-cached.
+### Phase 3 — Bulk directory indexer  ✅ DONE
+`scripts/index-directory.sh <folder>` + Raycast wrapper
+`raycast_scripts/other/pdf-viewer-index-directory.sh` (takes a text arg for
+the folder path, handles leading `~`). See §2 for behavior summary.
 
-**DoD**: Pointing the script at `~/OneDrive/…/Bøker/Pensum/` converts every
-textbook, second run is a no-op, logs show "N converted, M skipped".
-
-### Phase 4 — FastAPI daemon
+### Phase 4 — FastAPI daemon  ⏳ NEXT
 Replaces bash script + `python -m http.server` with a proper Python daemon.
 
 **Routes**:
