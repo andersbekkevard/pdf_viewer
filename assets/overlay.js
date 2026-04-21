@@ -68,7 +68,10 @@
     function registerSidebarKeyHandler() {
         document.addEventListener('keydown', function (e) {
             if (isInputTarget(e.target)) return;
-            if (e.metaKey && e.key === '.') {
+            // `!e.shiftKey` matters: ⌘⇧. is the page-counter toggle and on
+            // some layouts (e.g. Norwegian) e.key still reads '.' with
+            // shift held, so without this guard both handlers fire.
+            if (e.metaKey && !e.shiftKey && e.key === '.') {
                 e.preventDefault();
                 document.body.classList.toggle('sidebar-shown');
                 return;
