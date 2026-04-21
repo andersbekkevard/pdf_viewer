@@ -1,0 +1,22 @@
+{
+    "manifest_version": 3,
+    "name": "pdf_viewer",
+    "version": "0.1.0",
+    "description": "Redirect *.pdf URLs to the pdf_viewer daemon at localhost:7435 so Vimium works on PDFs.",
+    "permissions": [
+        "declarativeNetRequestWithHostAccess"
+    ],
+    "host_permissions": [
+        "http://*/*",
+        "https://*/*"
+    ],
+    "declarative_net_request": {
+        "rule_resources": [
+            {
+                "id": "pdf_redirect",
+                "enabled": true,
+                "path": "rules.json"
+            }
+        ]
+    }
+}

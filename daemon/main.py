@@ -127,12 +127,23 @@ def _view_path(path: str):
     return FileResponse(p, media_type="application/pdf", filename=p.name)
 
 
+PASSTHROUGH_MARKER = "_pdfvw=passthrough"
+
+
 def _view_url(url: str):
     entry = CACHE_DIR / url_hash(url)
     html = first_html(entry)
     if html is not None:
         return FileResponse(html, media_type="text/html; charset=utf-8")
-    return RedirectResponse(url, status_code=307)
+    # Cache miss: 307 to the original URL, but tag it with a marker so the
+    # browser extension's allow-rule short-circuits the redirect match —
+    # otherwise clicks on .pdf links would loop (ext redirects → daemon 307s
+    # → ext redirects → ...) until Chromium ERR_TOO_MANY_REDIRECTS.
+    parsed = urllib.parse.urlparse(url)
+    new_query = (f"{parsed.query}&{PASSTHROUGH_MARKER}"
+                 if parsed.query else PASSTHROUGH_MARKER)
+    passthrough = urllib.parse.urlunparse(parsed._replace(query=new_query))
+    return RedirectResponse(passthrough, status_code=307)
 
 
 # -----------------------------------------------------------------------------

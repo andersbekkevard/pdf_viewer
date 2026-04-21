@@ -94,7 +94,7 @@ else transparently.
 
 ---
 
-## 2. Current state (phases 1, 1.5, 2, 3, 4, 5 done)
+## 2. Current state (phases 1, 1.5, 2, 3, 4, 5, 6 done)
 
 **What works:**
 - Overlay extracted to proper files:
@@ -143,9 +143,20 @@ else transparently.
   `KeepAlive=true`, `ThrottleInterval=5s`. Verified: kill the daemon,
   launchctl respawns it within seconds; reboot will bring it up on
   login.
+- **Comet MV3 extension** (`extension/{manifest.json, rules.json}`):
+  static `declarativeNetRequest` rule redirects `^https?://.*\.pdf(\?.*)?$`
+  main_frame navigations → `http://localhost:7435/view?url=<original>`.
+  Install: open `chrome://extensions` (or `comet://extensions`) → enable
+  Developer mode → *Load unpacked* → point at `extension/`.
+  Loop-prevention: a second allow-rule short-circuits any URL containing
+  `_pdfvw=passthrough`, and the daemon appends that marker to its 307
+  Location on cache miss. Without this pair, ext-redirects and 307s
+  bounce forever (ERR_TOO_MANY_REDIRECTS). Non-.pdf URLs (e.g.
+  Blackboard signed links) are intentionally not intercepted — user
+  triggers Raycast-convert manually, next visit hits cache.
 
 **What doesn't work yet:**
-- Browser extension
+- Visit tracking / LRU eviction (phase 7, not urgent)
 
 ---
 
@@ -361,17 +372,19 @@ Symlinked into `~/Library/LaunchAgents/` so repo edits propagate on the
 next `launchctl kickstart -k gui/$UID/com.anders.pdf_viewer`. Install /
 uninstall commands live at the top of the plist file as comments.
 
-### Phase 6 — Browser extension (Comet MV3)  ⏳ NEXT
-`extension/manifest.json` + `extension/rules.json`.
+### Phase 6 — Browser extension (Comet MV3)  ✅ DONE
+Two-rule static `declarativeNetRequest`:
+1. Priority-2 `allow` rule matches the `_pdfvw=passthrough` marker — breaks
+   the redirect loop between the extension and the daemon's 307 on miss.
+2. Priority-1 `redirect` rule matches `^https?://.*\.pdf(\?.*)?$`
+   main_frame navigations and rewrites them via `regexSubstitution` into
+   `http://localhost:7435/view?url=<original>`. `excludedRequestDomains`
+   skips localhost so requests to the daemon itself never match.
 
-Redirects `*.pdf$` URLs → `http://localhost:7435/view?url=<original>` via
-`declarativeNetRequest`. ~20 lines total.
+The daemon's `_view_url` appends `_pdfvw=passthrough` to the 307 Location
+on cache miss so the allow-rule fires.
 
-**DoD**: Clicking any `https://…pdf` link in Comet opens directly in the
-HTML viewer if cached, or falls through to native viewer (via daemon's
-307 on miss).
-
-### Phase 7 — Visit tracking
+### Phase 7 — Visit tracking  ⏳ NEXT (only if/when it matters)
 Small SQLite DB updated on every `/view` cache hit. Drives:
 - "Most-read PDFs" endpoint
 - LRU cache eviction
