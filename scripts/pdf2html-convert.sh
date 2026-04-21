@@ -203,7 +203,15 @@ python3 "$REPO_DIR/scripts/inject-overlay.py" \
 # returns 404 (no route matches the root), which would trick the old
 # fallback into spawning a second server on *:7435 that collides with the
 # IPv4-only daemon socket and serves half the requests.
-if ! curl -sf "http://localhost:${PORT}/healthz" >/dev/null 2>&1; then
+#
+# We grep for {"status":"ok"} rather than just HTTP 200 so a rogue http.server
+# on *:7435 (from the old buggy fallback) doesn't pass the check by accident
+# if it ever happens to respond 200 on some path.
+HEALTHZ_BODY=$(curl -sf "http://localhost:${PORT}/healthz" 2>/dev/null || true)
+if [[ "$HEALTHZ_BODY" != *'"status":"ok"'* ]]; then
+    if lsof -nP -iTCP:${PORT} -sTCP:LISTEN 2>/dev/null | grep -q 'http.server'; then
+        fail "stray http.server on :${PORT} is blocking the daemon — kill it with 'pkill -f \"http.server ${PORT}\"'"
+    fi
     fail "daemon unreachable on :${PORT} — check 'launchctl list | grep pdf_viewer'"
 fi
 
