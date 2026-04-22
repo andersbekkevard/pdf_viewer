@@ -20,6 +20,7 @@ For the rationale on the overall keyboard strategy, see
 | `⌘⇧.`                  | Toggle page counter                                           |
 | `:`                    | Open command palette                                          |
 | `⌘K`                   | Library picker (palette pre-seeded with `:open `)             |
+| `⌘,`                   | Open settings (intercepts browser preferences shortcut)       |
 | `?`                    | Toggle cheatsheet (needs Vimium `?` disabled for `localhost:7435`) |
 | `Esc`                  | Close palette → close cheatsheet → clear selection            |
 

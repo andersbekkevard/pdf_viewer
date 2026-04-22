@@ -32,3 +32,4 @@ extension/_metadata/
 
 # Local scratch / one-off scripts
 tmp/
+.playwright-cli/

@@ -1040,12 +1040,19 @@ body.sidebar-shown #pdf2html-sidebar-body #outline {
     position: fixed;
     top: 14px;
     left: 50%;
-    transform: translateX(-50%);
+    /* Base centering of the pill. JS adjusts via --pageno-shift so .center's
+       midpoint stays pinned to the viewport midpoint even when left/right
+       side widths differ. */
+    --pageno-shift: 0px;
+    transform: translateX(calc(-50% + var(--pageno-shift)));
     z-index: 9998;
     display: inline-flex;
     align-items: center;
+    flex-wrap: nowrap;
+    white-space: nowrap;
     gap: 8px;
     padding: 7px 14px;
+    max-width: calc(100vw - 32px);
     background: rgba(40, 40, 40, 0.82);
     backdrop-filter: blur(14px) saturate(1.2);
     -webkit-backdrop-filter: blur(14px) saturate(1.2);
@@ -1061,11 +1068,19 @@ body.sidebar-shown #pdf2html-sidebar-body #outline {
     pointer-events: none;
     font-variant-numeric: tabular-nums;
 }
-#pdf2html-pageno .chap   { color: var(--fg); }
-#pdf2html-pageno .sub    { color: var(--fg-dim); }
-#pdf2html-pageno .sep    { color: var(--fg-dimmer); margin: 0 2px; }
-#pdf2html-pageno .cur    { color: var(--fg); }
-#pdf2html-pageno .tot    { color: var(--fg-dim); }
+#pdf2html-pageno .side,
+#pdf2html-pageno .center { display: inline-flex; align-items: center; gap: 8px; min-width: 0; }
+/* Restore `hidden`'s display:none (the rule above clobbers it). */
+#pdf2html-pageno .side[hidden] { display: none; }
+/* Each side caps at 32vw and ellipsises its .text rather than wrapping. */
+#pdf2html-pageno .side    { max-width: 32vw; }
+#pdf2html-pageno .text    { display: block; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+#pdf2html-pageno .text.chap { color: var(--fg); }
+#pdf2html-pageno .text.sub  { color: var(--fg-dim); }
+#pdf2html-pageno .text.muted { color: var(--fg-dim); }
+#pdf2html-pageno .sep     { color: var(--fg-dimmer); margin: 0 2px; }
+#pdf2html-pageno .cur     { color: var(--fg); }
+#pdf2html-pageno .tot     { color: var(--fg-dim); }
 body.pageno-hidden #pdf2html-pageno { display: none; }
 
 

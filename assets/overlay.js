@@ -17,6 +17,7 @@
         registerQuestionHandler();
         registerPaletteHandler();
         registerQuickOpenHandler();
+        registerSettingsHandler();
         registerPagenoToggleHandler();
         registerRenderAllHandler();
         registerPageJumpHandler();
@@ -812,6 +813,7 @@
                     + '<h3>Modes</h3>'
                     + kRow([[':']], 'Command palette (Tab / ^J / ^K to cycle)')
                     + kRow([['⌘','K']], 'Quick-open another cached doc')
+                    + kRow([['⌘',',']], 'Open settings')
                     + kRow([['/'], ['s']], 'Find in visible pages (Enter to jump, n/N to cycle)')
                     + kRow([['?']], 'Toggle this cheatsheet')
                     + kRow([['Esc']], 'Close overlay / clear selection')
@@ -1640,6 +1642,20 @@
     }
 
 
+    // ⌘, — open settings, intercepting the browser's own preferences shortcut.
+    // Capture-phase preventDefault is what keeps Comet from opening its
+    // settings page; Chromium only reserves ⌘T/W/Q/N hard, so ⌘, is ours to
+    // take. Bypasses isInputTarget like ⌘K — chord shortcuts should work from
+    // any focus state. openSettings() toggles, so pressing again closes.
+    function registerSettingsHandler() {
+        document.addEventListener('keydown', function (e) {
+            if (!e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
+            if (e.key !== ',' && e.code !== 'Comma') return;
+            e.preventDefault(); e.stopPropagation();
+            openSettings();
+        }, true);
+    }
+
     // ------------------------------------------------------------------------
     // Render-all quick toggle (A key) — fires change on the sidebar checkbox
     // so all persistence and rendering logic happens via the normal path.
@@ -2011,17 +2027,26 @@
 
         var el = document.createElement('div');
         el.id = 'pdf2html-pageno';
-        // Structured spans so CSS can tint each segment (design: chapter in
-        // full fg, separators dim, numerals tabular). The chapter segments
-        // stay hidden until we have an active outline entry.
+        // Three zones: .side.left holds a chapter reference (e.g. "Ch. 3.8"),
+        // .center holds the page numerals, .side.right holds a chapter/section
+        // title. When only one of the two is available, it falls back to the
+        // left. The pill's translateX is live-adjusted via --pageno-shift so
+        // .center always lands on the viewport's exact horizontal middle,
+        // regardless of side widths.
         el.innerHTML =
-            '<span class="chap" hidden></span>' +
-            '<span class="sep" hidden>·</span>' +
-            '<span class="sub" hidden></span>' +
-            '<span class="sep chap-sep" hidden>·</span>' +
-            '<span class="cur" id="pdf2html-pageno-current">1</span>' +
-            '<span class="sep">/</span>' +
-            '<span class="tot">' + total + '</span>';
+            '<span class="side left" hidden>' +
+                '<span class="text"></span>' +
+                '<span class="sep">·</span>' +
+            '</span>' +
+            '<span class="center">' +
+                '<span class="cur" id="pdf2html-pageno-current">1</span>' +
+                '<span class="sep">/</span>' +
+                '<span class="tot">' + total + '</span>' +
+            '</span>' +
+            '<span class="side right" hidden>' +
+                '<span class="sep">·</span>' +
+                '<span class="text"></span>' +
+            '</span>';
         document.body.appendChild(el);
 
         // Default: hidden. Only show if the user has explicitly enabled it
@@ -2029,47 +2054,68 @@
         if (localStorage.getItem('pdf2html-pageno-hidden') !== '0') {
             document.body.classList.add('pageno-hidden');
         }
-        var cur     = document.getElementById('pdf2html-pageno-current');
-        var chapEl  = el.querySelector('.chap');
-        var subEl   = el.querySelector('.sub');
-        // The two chapter-flanking separators (before the chapter subtitle,
-        // and between chapter-line and the page numerals). The final "/"
-        // separator between cur/tot is always visible and isn't tracked here.
-        var allSeps = el.querySelectorAll('.sep');
-        var chapSeps = [allSeps[0], el.querySelector('.sep.chap-sep')];
+        var cur       = document.getElementById('pdf2html-pageno-current');
+        var leftEl    = el.querySelector('.side.left');
+        var rightEl   = el.querySelector('.side.right');
+        var leftText  = leftEl.querySelector('.text');
+        var rightText = rightEl.querySelector('.text');
+
+        function recenterCenter() {
+            // Two modes:
+            //   (a) both sides visible → pin .center's midpoint to viewport
+            //       midpoint by shifting the pill by half the side-width
+            //       imbalance. Prevents the numerals from drifting when one
+            //       title is much longer than the other.
+            //   (b) zero or one side visible → leave the pill centered as a
+            //       whole (shift=0). A single-sided pill pinned to viewport
+            //       center looks lopsided because nothing visually balances
+            //       the other side.
+            if (leftEl.hidden || rightEl.hidden) {
+                el.style.setProperty('--pageno-shift', '0px');
+                return;
+            }
+            var pillGap = 8;
+            var L = leftEl.offsetWidth  + pillGap;
+            var R = rightEl.offsetWidth + pillGap;
+            el.style.setProperty('--pageno-shift', ((R - L) / 2) + 'px');
+        }
+        // One observer handles both content changes (chapter update) and
+        // viewport resizes that trip the pill's max-width clamp.
+        try { new ResizeObserver(recenterCenter).observe(el); } catch (_) {}
 
         function updateChapter() {
             // Split active outline label into "Ch. N" + sub-title if it fits
             // the pdf2htmlEX common pattern "1.2 Title" or "Chapter 3: Title".
             var active = document.querySelector('#outline a.pdf2html-active');
             var label = active ? (active.textContent || '').trim() : '';
-            if (!label) {
-                chapEl.hidden = subEl.hidden = true;
-                chapSeps.forEach(function (s) { if (s) s.hidden = true; });
-                return;
+            var chapPart = '', subPart = '';
+            if (label) {
+                var m = label.match(/^\s*((?:\d+)(?:\.\d+)*)\s+(.*)$/);
+                if (m) {
+                    chapPart = 'Ch. ' + m[1];
+                    subPart  = m[2];
+                } else {
+                    subPart  = label;
+                }
             }
-            // Try "N.N.N  Title" or "N  Title" — lead numeric token is the chapter ref.
-            var m = label.match(/^\s*((?:\d+)(?:\.\d+)*)\s+(.*)$/);
-            var chapPart, subPart;
-            if (m) {
-                chapPart = 'Ch. ' + m[1];
-                subPart  = m[2];
-            } else {
-                chapPart = '';
-                subPart  = label;
+            // Chapter reference goes left, title goes right. If only one is
+            // available, put it on the left so the pill stays compact rather
+            // than awkwardly listing to one side.
+            var lt = '', rt = '', leftKind = 'sub', rightKind = 'sub';
+            if (chapPart && subPart) {
+                lt = chapPart; rt = subPart; leftKind = 'muted'; rightKind = 'muted';
+            } else if (chapPart) {
+                lt = chapPart; leftKind = 'chap';
+            } else if (subPart) {
+                lt = subPart;
             }
-            if (chapPart) {
-                chapEl.textContent = chapPart;
-                chapEl.hidden = false;
-            } else {
-                chapEl.hidden = true;
-            }
-            subEl.textContent = subPart;
-            subEl.hidden = !subPart;
-            // Show "·" between chap and sub if both present; and "·" before
-            // the page number iff any chapter text is visible at all.
-            if (chapSeps[0]) chapSeps[0].hidden = !(chapPart && subPart);
-            if (chapSeps[1]) chapSeps[1].hidden = !(chapPart || subPart);
+            leftText.className   = 'text ' + leftKind;
+            leftText.textContent = lt;
+            rightText.className   = 'text ' + rightKind;
+            rightText.textContent = rt;
+            leftEl.hidden  = !lt;
+            rightEl.hidden = !rt;
+            recenterCenter();
         }
 
         var lastPageNum = -1;

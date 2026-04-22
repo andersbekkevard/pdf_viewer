@@ -1,6 +1,7 @@
 - [ ] Make :open be a bit more picky on what files to show, using a zoxide based algo from the "open" db
 - [ ] Maybe UI for eviction in :open
 - [ ] Add a prefix F as in tmux fingers for yanking likely sections that go together (paths, urls, but also commands, text that is separated by the other text)
+- [ ] Explore native `Cmd+F` over the whole document via a per-page shadow text layer; start with V1, likely continue to V2 after validating Chromium behavior. See [docs/native-browser-find-shadow-layer.md](docs/native-browser-find-shadow-layer.md).
 - [ ] Acutually integrate with/fork pdf2htmlEX. There is obviously a lot of additional value in integrating with pdf2htmlEX.
 - [ ] Make it so the text is ordered correctly on the page from vertical spacing, so scrolling in mark mode with j, k etc doesnt jump up and down if e.g. the pdf text of figures is in a different text layer.
 - [ ] Could also rewrite it to work on arm64 (only 18k LOC, potentially)
