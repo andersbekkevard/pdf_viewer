@@ -1,62 +1,258 @@
 # pdf_viewer
 
-Personal PDF → HTML viewer. Take any PDF (local or online), run it through
-`pdf2htmlEX`, inject a custom JS/CSS overlay that adds vim-friendly navigation,
-and serve the result from localhost. Page state (render buffer, cursor pin,
-page counter visibility, etc.) persists per-browser via `localStorage`.
+Personal PDF → custom-HTML viewer for a keyboard-native (Vimium) workflow.
+Click any `*.pdf` link in Comet, land in a dark, Vim-friendly HTML viewer
+instead of Chrome's sandboxed PDF surface.
 
-## Current state (phase 1: clean extract)
+![Viewer — sidebar outline + light PDF canvas](docs/screenshots/viewer.png)
 
-The overlay is extracted to proper files:
+`PLAN.md` is the single source of truth (problem statement, decisions,
+roadmap, feature registry). This README is the orientation doc.
 
-- `assets/overlay.css` — all custom styling
-- `assets/overlay.js` — all runtime behavior (sidebar, pin, render window,
-  cheatsheet, command palette, page counter, outline active tracker)
+## Why
 
-The Raycast script at `scripts/pdf2html-convert.sh` runs `pdf2htmlEX`,
-injects `<link>` / `<script>` tags that reference the served assets, and
-opens the result in the current Comet tab.
+Vimium — the vim-style keyboard navigation we rely on for everything —
+**does not work inside Chrome/Comet's native PDF viewer**. The native
+viewer is a sandboxed `chrome://pdf` surface that browser extensions cannot
+reach. No `j/k`, no `/`, no visual mode, no marks.
 
-Runs on **port 7435**, cache at **`~/.cache/pdf_viewer/`** — intentionally
-different from the old hardcoded script's `7433` / `~/.cache/pdf2html-serve/`
-so both can run side-by-side for A/B comparison during migration.
+The workaround: render PDFs as **HTML** instead. `pdf2htmlEX` produces
+pixel-faithful HTML with selectable text; Vimium treats it like any other
+page. Then we inject a JS/CSS overlay to fix the UX (dark canvas, clean
+sidebar, render-window, cursor pin, palette, outline tracker, marks,
+position restore, …).
+
+## Design philosophy
+
+1. **Cache is load-bearing.** Conversion is slow (Docker + pdf2htmlEX on
+   Rosetta-emulated amd64, 1–2 min for a textbook). Convert once, cache
+   forever at `~/.cache/pdf_viewer/<hash>/`. Every subsequent open is a
+   disk read — 1–3 ms.
+2. **Docker on demand.** Docker is the only heavy component. It sits off
+   23 h a day. The user starts it manually before the rare "convert a
+   batch" session. The daemon never touches Docker (ADR 0004).
+3. **Read-only daemon, scary work in Raycast.** FastAPI daemon serves the
+   cache and nothing else. All conversion / indexing lives in Raycast
+   scripts. If the daemon crashes, no documents are lost; if a script
+   breaks, the daemon keeps serving everything already cached.
+4. **Extension for frictionless hits; Raycast for deliberate conversions.**
+   The MV3 extension redirects `*.pdf` navigations to
+   `/view?url=<original>`. Cache hit → instant HTML. Miss → 307 back to
+   the original URL (native viewer takes over, degraded but not broken),
+   and the user runs Raycast-convert to escalate. Next visit of the same
+   doc hits cache forever.
+5. **Overlay is the product.** `assets/overlay.{js,css}` is what the user
+   actually experiences. Served live via symlink — edits reload on ⌘⇧R,
+   no reconversion needed.
+6. **Keyboard first.** All numeric arguments go through the `:` palette,
+   not `[N]<key>` prefixes. Shortcut conflicts with Vimium are
+   non-negotiable — see the "Permanently rejected" list in `PLAN.md` §7.
+
+## Current state
+
+All core phases done (1 → 7). What works end-to-end today:
+
+- **Conversion** — `scripts/pdf2html-convert.sh` handles both `file://`
+  and `https://` sources (signed Blackboard/S3/CloudFront URLs included;
+  query string stripped from the cache key so signed links hit cache
+  across sessions). Filename recovered from `Content-Disposition` or
+  URL path.
+- **Overlay injection** — `scripts/inject-overlay.py`, shared between
+  fresh conversions and bulk upgrades. Idempotent.
+- **Bulk upgrade** — `scripts/upgrade-cache.sh --mode={inject,reconvert}`.
+  `inject` re-applies the overlay to every cached HTML (seconds, no
+  Docker). `reconvert` re-runs pdf2htmlEX; for https entries reuses the
+  stored `_source/*.pdf` so signed URLs don't need to be refetched.
+- **Bulk indexing** — `scripts/index-directory.sh <folder>` recursively
+  content-hashes every PDF and converts uncached ones. Raycast wrapper
+  takes a folder argument.
+- **FastAPI daemon** (`daemon/main.py`, uv project) — read-only. Routes:
+  `GET /view?path=` / `GET /view?url=` / `GET /<hash>/<file>` /
+  `GET /_assets/*` / `GET /healthz` / `GET /stats` / `GET /stats/recent` /
+  `GET /library`. Cache lookup ≈ 1–3 ms.
+- **launchd autostart** — `launchd/com.anders.pdf_viewer.plist` symlinked
+  into `~/Library/LaunchAgents/`. `KeepAlive=true`, respawns within a
+  second if killed; brought up on login.
+- **Comet MV3 extension** (`extension/`) — static
+  `declarativeNetRequest` rules redirect `^https?://.*\.pdf(\?.*)?$`
+  main-frame navigations to the daemon. Loop-prevention via a
+  `_pdfvw=passthrough` marker that the daemon appends to its 307 on
+  miss.
+- **Visit tracking** (`daemon/visits.py` + `visits.db`) — every cache hit
+  logged off the response path via FastAPI `BackgroundTasks`. Powers
+  `/stats`, `/stats/recent`, and the visits-sorted library picker
+  behind `⌘K` / `:open`.
+
+What's not built: cross-device access over Tailscale (phase 8, optional).
 
 ## Workflow
 
-1. Open a local PDF in Comet (`file://…`)
-2. Trigger the Raycast script
-3. Tab navigates in-place to the converted HTML at `http://localhost:7435/…`
+- **Cached doc, anywhere on the web** — click the link, land in the HTML
+  viewer. No thought.
+- **Uncached doc** — click the link, native viewer opens (degraded but
+  readable). If you want it in HTML, run Raycast-convert once. Docker
+  must be running. Next click forever hits cache.
+- **Whole textbook directory** — run Raycast-index-directory against the
+  folder. Docker must be running. Idempotent; re-running skips
+  already-cached PDFs (content-hash dedup handles renames).
 
-## Architecture — future direction
-
-See `TODO.md`. Short version: this shell+script thing becomes a FastAPI
-daemon that handles both local and remote PDFs, a browser extension that
-redirects `*.pdf` URLs transparently, and a launchd plist to keep the
-daemon alive.
-
-## Layout
+## Components
 
 ```
 pdf_viewer/
-├── assets/
-│   ├── overlay.css        # served at /_assets/overlay.css
-│   └── overlay.js         # served at /_assets/overlay.js
+├── assets/overlay.{js,css}      # the overlay — all UX behavior
 ├── scripts/
-│   └── pdf2html-convert.sh  # Raycast script (phase-1)
-├── README.md
-└── TODO.md
+│   ├── pdf2html-convert.sh      # Raycast convert: single PDF (file or url)
+│   ├── index-directory.sh       # Raycast index: recursive directory walk
+│   ├── upgrade-cache.sh         # bulk re-inject / re-convert
+│   └── inject-overlay.py        # idempotent overlay injector
+├── daemon/                      # FastAPI read-only service (uv project)
+│   ├── main.py
+│   └── visits.py
+├── extension/                   # Comet MV3 redirect extension
+│   ├── manifest.json
+│   └── rules.json
+├── launchd/                     # LaunchAgent plist
+├── docs/
+│   ├── ADR/                     # immutable architectural decisions
+│   └── pdf2htmlex-dom.md        # DOM conventions of converted HTML
+├── PLAN.md                      # plan of record (read first)
+├── TODO.md                      # short roadmap index
+└── CLAUDE.md                    # guidance for future Claude sessions
 ```
+
+## Externalities
+
+Everything the repo **does not** contain but depends on. All of it is
+wired once and then forgotten.
+
+### 1. Raycast wrappers (`~/dev/misc/raycast_scripts/other/`)
+
+Raycast only indexes files under its configured script directories, so
+the user-facing entrypoints live there — not in this repo. They are
+deliberately **trivial**: a `nohup` fork into the real script, then
+`echo` a HUD line and exit. All logic lives in `pdf_viewer/scripts/`
+so it can be edited and tested without Raycast in the loop.
+
+```bash
+# ~/dev/misc/raycast_scripts/other/pdf-viewer-convert.sh
+nohup /…/pdf_viewer/scripts/pdf2html-convert.sh "$@" \
+    >>"$HOME/.cache/pdf_viewer/log" 2>&1 &
+disown
+echo "pdf_viewer: starting conversion…"
+```
+
+```bash
+# ~/dev/misc/raycast_scripts/other/pdf-viewer-index-directory.sh
+export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+nohup /…/pdf_viewer/scripts/index-directory.sh "$1" \
+    >>"$HOME/.cache/pdf_viewer/log" 2>&1 &
+disown
+echo "pdf_viewer: indexing folder…"
+```
+
+Why `nohup &` + early `echo` instead of `exec`: Raycast's silent mode
+only surfaces a HUD at script **completion**. A cache miss is 1–2 min
+and a folder index can be tens of minutes — `exec`'ing straight through
+would leave the user staring at nothing for that entire window. Forking
+into the background makes the HUD fire immediately; the real script
+runs to completion on its own and uses macOS notifications for
+progress.
+
+### 2. LaunchAgent (`~/Library/LaunchAgents/com.anders.pdf_viewer.plist`)
+
+**Symlinked** into `LaunchAgents/` from `launchd/com.anders.pdf_viewer.plist`
+so repo edits propagate on the next
+`launchctl kickstart -k gui/$UID/com.anders.pdf_viewer`. User-level
+agent, no sudo. `RunAtLoad=true`, `KeepAlive=true`,
+`ThrottleInterval=5`. Install/uninstall commands live as comments at
+the top of the plist.
+
+### 3. Comet extension (loaded from `extension/`)
+
+Not published to a store. Install manually: `comet://extensions` →
+enable Developer mode → *Load unpacked* → point at
+`pdf_viewer/extension/`. Two static `declarativeNetRequest` rules
+(redirect + passthrough allow). Reloads on every edit to `rules.json`
+only after hitting the extension's reload button.
+
+### 4. Runtime cache (`~/.cache/pdf_viewer/`)
+
+Not checked into the repo. Bootstrapped on first run. Layout in
+`PLAN.md` §3. `_assets/` inside it is a **symlink** back to the repo's
+`assets/` so overlay edits go live without a restart. Nuking the whole
+cache loses nothing irreplaceable — next open re-converts.
+
+### 5. Vimium exclusion rule
+
+Add `localhost:7435` to Vimium's "Keys to pass through" with the key
+`?`, otherwise Vimium swallows it before the overlay's cheatsheet
+handler sees it. One-time setup in the Vimium options page.
+
+### 6. Docker Desktop
+
+Required **only** when converting — the daemon never touches it
+(ADR 0004). `scripts/pdf2html-convert.sh` and `scripts/index-directory.sh`
+fail fast with a clear "Docker daemon not running" message if the user
+forgets. Do not auto-start Docker from any script.
+
+### Network
+
+Port `7435`, bound to `127.0.0.1`. Deliberately different from the
+retired hardcoded script's `7433` so both can run side-by-side during
+the migration window.
 
 ## Shortcuts (inside converted HTML)
 
-| Key       | Action                               |
-|-----------|--------------------------------------|
-| `s` / `⌘.`| Toggle sidebar                       |
-| `A`       | Toggle render-all pages              |
-| `⌘⇧.`     | Toggle page counter                  |
-| `:`       | Open command palette                 |
-| `?`       | Toggle cheatsheet overlay            |
-| `Esc`     | Close overlay / clear selection      |
+| Key      | Action                                       |
+|----------|----------------------------------------------|
+| `s` / `⌘.` | Toggle sidebar                             |
+| `A`      | Toggle render-all pages                      |
+| `⌘⇧.`    | Toggle page counter                          |
+| `:`      | Open command palette                         |
+| `⌘K`     | Library picker (palette seeded with `:open `)|
+| `?`      | Cheatsheet (needs Vimium `?` disabled on `localhost:7435`) |
+| `Esc`    | Close palette → cheatsheet → clear selection |
 
-Palette: `:42` (goto), `:pin 30`, `:buffer 20`, `:all`, `:yank`,
-`:counter`, `:help`.
+Palette: `:42`, `:p 42`, `:chapter <name>`, `:next` / `:prev`,
+`:mark <a-z>`, `:jump <a-z>`, `:clear <a-z>`, `:open <doc>` / `:o`,
+`:pin`, `:scrolloff 25` / `:so 25`, `:buffer 20` / `:buf 20`, `:all`,
+`:yank <ref|page|chapter|document>` / `:y`, `:counter` / `:num`,
+`:help` / `:h`.
+
+Full feature + keybinding registry: `PLAN.md` §6–§7.
+
+## Screenshots
+
+<table>
+<tr>
+<td width="50%"><img src="docs/screenshots/cheatsheet.png" alt="Cheatsheet"><br><sub><b>Cheatsheet (<code>?</code>)</b> — all keybindings + palette commands.</sub></td>
+<td width="50%"><img src="docs/screenshots/settings.png" alt="Settings"><br><sub><b>Settings (<code>:set</code>)</b> — theme, zoom, render buffer, scrolloff, cursor pin.</sub></td>
+</tr>
+<tr>
+<td width="50%"><img src="docs/screenshots/find.png" alt="Find in visible pages"><br><sub><b>Find (<code>/</code>)</b> — search within rendered pages, <code>Enter</code> to jump, <code>n/N</code> to cycle. Page counter pill visible top-center.</sub></td>
+<td width="50%"><img src="docs/screenshots/pages.png" alt="Pages panel"><br><sub><b>Pages panel</b> — thumbnail grid in the sidebar (toggle Outline / Pages tabs).</sub></td>
+</tr>
+</table>
+
+## Testing
+
+No automated tests. Verify by running the Raycast shortcut on a local PDF
+and inspecting behavior in Comet. Logs at `~/.cache/pdf_viewer/log` —
+`tail -f` to watch live.
+
+**Overlay-only changes** (most common): edit `assets/overlay.{js,css}`,
+⌘⇧R in an already-open converted tab. Symlink-served, no reconversion.
+
+**Script / injection changes**: `trash ~/.cache/pdf_viewer/<hash>/` to
+force re-conversion next run, or bump `OVERLAY_VERSION` in the script to
+bust the `<script src=…?v=N>` query-string cache.
+
+## Further reading
+
+- `PLAN.md` — decisions, phases, feature registry, gotchas
+- `docs/ADR/0001` — why pdf2htmlEX (vs marker, pdf.js, mupdf, …)
+- `docs/ADR/0002` — render-window + cursor-pin architecture
+- `docs/ADR/0003` — keyboard strategy under Vimium
+- `docs/ADR/0004` — docker-on-demand + daemon-read-only split
+- `docs/pdf2htmlex-dom.md` — DOM conventions of converted HTML
