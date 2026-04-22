@@ -242,10 +242,10 @@ deliberately *don't* bind): [`docs/keybindings.md`](docs/keybindings.md).
 <table>
 <tr>
 <td width="50%"><img src="docs/screenshots/cheatsheet.png" alt="Cheatsheet"><br><sub><b>Cheatsheet (<code>?</code>)</b> — all keybindings + palette commands.</sub></td>
-<td width="50%"><img src="docs/screenshots/settings.png" alt="Settings"><br><sub><b>Settings (<code>:set</code>)</b> — theme, zoom, render buffer, scrolloff, cursor pin.</sub></td>
+<td width="50%"><img src="docs/screenshots/find.png" alt="Find in visible pages"><br><sub><b>Find (<code>/</code>)</b> — search within rendered pages, <code>Enter</code> to jump, <code>n/N</code> to cycle. Page counter pill visible top-center.</sub></td>
 </tr>
 <tr>
-<td width="50%"><img src="docs/screenshots/find.png" alt="Find in visible pages"><br><sub><b>Find (<code>/</code>)</b> — search within rendered pages, <code>Enter</code> to jump, <code>n/N</code> to cycle. Page counter pill visible top-center.</sub></td>
+<td width="50%"><img src="docs/screenshots/settings.png" alt="Settings"><br><sub><b>Settings (<code>:set</code>)</b> — theme, zoom, render buffer, scrolloff, cursor pin.</sub></td>
 <td width="50%"><img src="docs/screenshots/pages.png" alt="Pages panel"><br><sub><b>Pages panel</b> — thumbnail grid in the sidebar (toggle Outline / Pages tabs).</sub></td>
 </tr>
 </table>
