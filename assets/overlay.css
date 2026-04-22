@@ -66,6 +66,16 @@ html, body, #page-container {
 ::selection     { background: #99C1DA; color: #1a1816; }
 ::-moz-selection { background: #99C1DA; color: #1a1816; }
 
+/* Search activated an active hit: the Selection we set for Vimium's V to
+   latch onto would otherwise paint blue over our orange custom highlight
+   (Chromium paints ::selection on top of custom highlights regardless of
+   Highlight.priority). Make ::selection transparent so the orange shows
+   through — the Selection object still exists, it's just invisible. The
+   class drops the moment the user presses anything besides n/N/`/`/Esc,
+   so V (and any later selection) paints the normal blue. */
+body.pdf2html-search-entered ::selection     { background: transparent; color: inherit; }
+body.pdf2html-search-entered ::-moz-selection { background: transparent; color: inherit; }
+
 
 /* ---- Scrolloff via scroll-padding -----------------------------------------
    Browser-native vim `scrolloff` equivalent: reserves a band at the top and
@@ -649,6 +659,9 @@ body.sidebar-shown #pdf2html-sidebar-body #outline {
 .pdf2html-switch {
     width: 34px;
     height: 20px;
+    padding: 0;
+    font: inherit;
+    color: inherit;
     background: var(--bg-input);
     border: 1px solid var(--hairline);
     border-radius: 999px;
@@ -656,6 +669,10 @@ body.sidebar-shown #pdf2html-sidebar-body #outline {
     cursor: pointer;
     flex: 0 0 auto;
     transition: background 100ms ease-out, border-color 100ms ease-out;
+}
+.pdf2html-switch:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
 }
 .pdf2html-switch::after {
     content: '';

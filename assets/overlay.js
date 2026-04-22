@@ -302,6 +302,15 @@
         window.__pdf2htmlSetEscClears = function (on) {
             localStorage.setItem('pdf2html-esc-clears', on ? '1' : '0');
         };
+        window.__pdf2htmlSetSearchCase = function (on) {
+            localStorage.setItem('pdf2html-search-case', on ? '1' : '0');
+            var sIn = document.getElementById('pdf2html-search-input');
+            if (sIn) { updateSearchHits(sIn.value); updateSearchCount(); }
+        };
+    }
+
+    function isSearchCaseSensitive() {
+        return localStorage.getItem('pdf2html-search-case') === '1';
     }
 
 
@@ -363,6 +372,7 @@
         var curScrollOffPct = Math.round(
             (parseFloat(localStorage.getItem('pdf2html-scrolloff') || '0.25')) * 100);
         var pinnedOn = localStorage.getItem('pdf2html-pinned') !== '0';
+        var caseOn = isSearchCaseSensitive();
 
         // Scrolloff slider + pin switch are cross-wired: flipping pin locks
         // the slider to 50% and disables it; flipping back restores the
@@ -423,6 +433,10 @@
                 soWrap),
             makeRow('Pin cursor to center', ':pin · locks scrolloff to 50%',
                 makeSwitch(pinnedOn, pinSwitchOnToggle)),
+            makeRow('Case-sensitive search', ':case · / matches exact casing',
+                makeSwitch(caseOn, function (on) {
+                    if (window.__pdf2htmlSetSearchCase) window.__pdf2htmlSetSearchCase(on);
+                })),
         ]));
 
         // --- Keyboard --------------------------------------------------
@@ -474,10 +488,16 @@
         return s;
     }
     function makeSwitch(on, onToggle) {
-        var sw = el('div', { class: 'pdf2html-switch' + (on ? ' on' : '') });
+        var sw = el('button', {
+            type: 'button',
+            class: 'pdf2html-switch' + (on ? ' on' : ''),
+            role: 'switch',
+            'aria-checked': on ? 'true' : 'false',
+        });
         sw.addEventListener('click', function () {
             var v = !sw.classList.contains('on');
             sw.classList.toggle('on', v);
+            sw.setAttribute('aria-checked', v ? 'true' : 'false');
             onToggle(v);
         });
         return sw;
@@ -587,13 +607,17 @@
                 document.body.classList.toggle('sidebar-shown');
                 return;
             }
-            // ←/→ switch tabs when the sidebar is open. Guarded on sidebar-shown
-            // so arrows keep their default (scroll) behavior when it's closed.
-            if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight')
+            // ←/→ (and h/l) switch tabs when the sidebar is open. Guarded on
+            // sidebar-shown so arrows keep their default (scroll) behavior when
+            // it's closed; h/l are guarded the same way so Vimium's own
+            // bindings on those keys are untouched outside the sidebar.
+            var leftKey  = e.key === 'ArrowLeft'  || e.key === 'h';
+            var rightKey = e.key === 'ArrowRight' || e.key === 'l';
+            if ((leftKey || rightKey)
                 && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey
                 && document.body.classList.contains('sidebar-shown')) {
                 e.preventDefault();
-                setSidebarTab(e.key === 'ArrowLeft' ? 'outline' : 'thumbs');
+                setSidebarTab(leftKey ? 'outline' : 'thumbs');
             }
         });
     }
@@ -641,15 +665,25 @@
             var ae = document.activeElement;
             prevActivation[kind] = (ae && ae !== document.body) ? ae : null;
         }
-        function mainScrollTarget() {
-            // The PDF scroller — what j/k should drive when no overlay owns focus.
-            return document.getElementById('page-container') || document.body;
+        // Handing j/k back to the PDF: DOMActivate alone isn't enough (Vimium
+        // needs the click too), so we dispatch both, then immediately clear
+        // any selection range created by pdf2htmlEX's own click listener on
+        // the text layer (the blue glow the user saw is our ::selection color
+        // on a tiny range that the click materializes).
+        function activateMain() {
+            var el = document.getElementById('page-container') || document.body;
+            try { el.dispatchEvent(new Event('DOMActivate', { bubbles: true, cancelable: true })); } catch (e) {}
+            try { el.dispatchEvent(new MouseEvent('click',   { bubbles: true, cancelable: true })); } catch (e) {}
+            try {
+                var sel = window.getSelection();
+                if (sel && sel.rangeCount > 0) sel.removeAllRanges();
+            } catch (e) {}
         }
         function restore(kind) {
             var target = prevActivation[kind];
             prevActivation[kind] = null;
             if (target && document.contains(target)) activate(target);
-            else activate(mainScrollTarget());
+            else activateMain();
         }
 
         // Sidebar: body.sidebar-shown is the canonical "visible" signal.
@@ -662,7 +696,7 @@
                 activate(document.getElementById('pdf2html-sidebar-body'));
             } else {
                 // Hand j/k back to the PDF scroller.
-                activate(mainScrollTarget());
+                activateMain();
             }
         }).observe(document.body, { attributes: true, attributeFilter: ['class'] });
 
@@ -773,7 +807,7 @@
                 + '<div class="pdf2html-cheatsheet-section">'
                     + '<h3>Viewer</h3>'
                     + kRow([['s'], ['⌘','.']], 'Toggle sidebar')
-                    + kRow([['←'], ['→']], 'Sidebar: Outline / Pages tab (when open)')
+                    + kRow([['←','h'], ['→','l']], 'Sidebar: Outline / Pages tab (when open)')
                     + kRow([['A']], 'Toggle render-all pages')
                     + kRow([['⌘','⇧','.']], 'Toggle page counter')
                     + '<h3>Modes</h3>'
@@ -1085,7 +1119,10 @@
               });
           },
           handler: function (a) { clearMark(a); } },
-        { name: 'pin',     aliases: [],       desc: 'toggle pin-to-center',
+        { name: 'pin',     aliases: [],
+          desc: function () {
+              return 'turn pin-to-center ' + (localStorage.getItem('pdf2html-pinned') !== '0' ? 'OFF' : 'ON');
+          },
           argCompleter: null,
           handler: function () { toggleCheckboxAndFire('pdf2html-pinned-input'); } },
         { name: 'scrolloff', aliases: ['so'], desc: 'scrolloff N% (0-50)',
@@ -1094,7 +1131,10 @@
         { name: 'buffer',  aliases: ['buf'],  desc: 'render ±N pages',
           argCompleter: function (tail) { return prefixFilter(['5', '10', '20', '50'], tail); },
           handler: function (a) { if (a !== undefined) setInputValueAndFire('pdf2html-buffer-input', parseInt(a, 10)); } },
-        { name: 'all',     aliases: [],       desc: 'toggle render-all',
+        { name: 'all',     aliases: [],
+          desc: function () {
+              return 'turn render-all ' + (localStorage.getItem('pdf2html-render-all') === '1' ? 'OFF' : 'ON');
+          },
           argCompleter: null,
           handler: function () { toggleCheckboxAndFire('pdf2html-all-input'); } },
         { name: 'yank',    aliases: ['y'],    desc: 'copy content (ref/page/chapter/doc)',
@@ -1116,9 +1156,20 @@
               });
           },
           handler: function (a) { dispatchYank(a); } },
-        { name: 'counter', aliases: ['num'],  desc: 'toggle page counter',
+        { name: 'counter', aliases: ['num'],
+          desc: function () {
+              return (document.body.classList.contains('pageno-hidden') ? 'show' : 'hide') + ' page counter';
+          },
           argCompleter: null,
           handler: function () { if (window.__pdf2htmlTogglePageno) window.__pdf2htmlTogglePageno(); } },
+        { name: 'case',    aliases: [],
+          desc: function () {
+              return 'turn case-sensitive search ' + (isSearchCaseSensitive() ? 'OFF' : 'ON');
+          },
+          argCompleter: null,
+          handler: function () {
+              if (window.__pdf2htmlSetSearchCase) window.__pdf2htmlSetSearchCase(!isSearchCaseSensitive());
+          } },
         // `next`/`prev` are ordered AFTER `counter` so that `:n<Enter>` —
         // which prefix-matches both `counter` (via alias `num`) and `next` —
         // auto-selects `next` (state.idx = last match in COMMANDS order).
@@ -1221,7 +1272,7 @@
                             value: c.name,
                             display: c.name,
                             alias: c.aliases[0] || '',
-                            desc: c.desc,
+                            desc: typeof c.desc === 'function' ? c.desc() : c.desc,
                         };
                     });
             } else {
@@ -1340,6 +1391,12 @@
                 ev.preventDefault(); cycleMatch(1);
             } else if (ev.ctrlKey && !ev.metaKey && !ev.altKey
                        && (ev.key === 'k' || ev.key === 'K')) {
+                ev.preventDefault(); cycleMatch(-1);
+            } else if (ev.key === 'ArrowDown'
+                       && !ev.ctrlKey && !ev.metaKey && !ev.altKey) {
+                ev.preventDefault(); cycleMatch(1);
+            } else if (ev.key === 'ArrowUp'
+                       && !ev.ctrlKey && !ev.metaKey && !ev.altKey) {
                 ev.preventDefault(); cycleMatch(-1);
             } else if (ev.key === ' ' && input.value.indexOf(' ') === -1
                        && state.matches.length > 0) {
@@ -1595,8 +1652,69 @@
         if (pc) pc.style.setProperty('--pdf2html-scrolloff', pct);
     }
 
+    // The CSS path covers everything the browser scrolls natively (mouse drag,
+    // keyboard shift+arrow, click-to-place, scrollIntoView calls). Vimium's
+    // caret/visual mode moves the selection via Selection.modify() — a
+    // programmatic API that Chrome does NOT auto-scroll for. This handler
+    // fills that gap: read the focus range's *visual* rect (which correctly
+    // reflects pdf2htmlEX's transformed text; Element.scrollIntoView uses
+    // layout rects and lands in the wrong place here), compute the delta
+    // against the same band the CSS enforces, and smooth-scroll.
+    //
+    // Suppressed during a mouse drag so Chrome's native drag-past-edge
+    // auto-scroll (the mouse behavior that already "feels right") is left
+    // alone.
     function mountCursorPin() {
         applyScrollOffStyle();
+        var raf = null;
+        var dragging = false;
+        var lastScrollTs = 0;
+        // Smooth scroll animates ~300ms. A second scroll inside that window
+        // cancels the in-flight animation and restarts — so held `j` in
+        // Vimium, which fires selection updates every ~30ms, never lets the
+        // animation finish and the caret outruns the viewport (worst at
+        // page boundaries where delta includes the inter-page margin).
+        // Fall back to instant for rapid-fire; keep smooth for isolated
+        // moves where the animation has time to complete.
+        var RAPID_WINDOW_MS = 180;
+
+        document.addEventListener('mousedown', function () { dragging = true; });
+        document.addEventListener('mouseup',   function () { dragging = false; });
+
+        document.addEventListener('selectionchange', function () {
+            if (dragging || raf) return;
+            if (performance.now() < searchSuppressPinUntil) return;
+            raf = requestAnimationFrame(function () {
+                raf = null;
+                var sel = document.getSelection();
+                if (!sel || sel.rangeCount === 0 || !sel.focusNode) return;
+                var pc = document.getElementById('page-container');
+                if (!pc) return;
+                var r = document.createRange();
+                try { r.setStart(sel.focusNode, sel.focusOffset); r.collapse(true); }
+                catch (e) { return; }
+                var rect = r.getBoundingClientRect();
+                // Collapsed ranges sometimes return (0,0,0,0) at DOM edges —
+                // no reliable caret position, bail.
+                if (rect.top === 0 && rect.bottom === 0 && rect.left === 0) return;
+
+                var h = pc.clientHeight;
+                var y = rect.top - pc.getBoundingClientRect().top;
+                var frac = pinned ? 0.5 : scrollOffFraction;
+                var margin = h * frac;
+                var delta = 0;
+                if (pinned)              delta = y - h * 0.5;
+                else if (y < margin)     delta = y - margin;
+                else if (y > h - margin) delta = y - (h - margin);
+                if (Math.abs(delta) >= 1) {
+                    var now = performance.now();
+                    var behavior = (now - lastScrollTs < RAPID_WINDOW_MS) ? 'auto' : 'smooth';
+                    pc.scrollBy({ top: delta, behavior: behavior });
+                    lastScrollTs = now;
+                }
+            });
+        });
+
         window.__pdf2htmlSetScrollOff = function (f) {
             scrollOffFraction = clampScrollOff(f);
             applyScrollOffStyle();
@@ -2040,6 +2158,10 @@
     // for letter- and word-spacing that DOM surgery would visibly break).
     // ------------------------------------------------------------------------
     var searchState = { hits: [], activeIdx: -1, entered: false };
+    // When Enter promotes a hit to a browser Selection, the cursor-pin handler
+    // (mountCursorPin) would see the resulting selectionchange and issue its
+    // own competing scroll. Suppress it until our own smooth-scroll settles.
+    var searchSuppressPinUntil = 0;
 
     // Single capture-phase handler owns every key that matters to search.
     // Listen on WINDOW at capture so we fire before any document- or
@@ -2112,7 +2234,44 @@
                 openSearch();
                 return;
             }
+            // Any other key: fall through. We keep nvim-style hlsearch —
+            // highlights + n/N persist until explicit Esc. The
+            // ::selection-hiding body class is dropped separately by the
+            // selectionchange listener below, the moment the Selection
+            // diverges from the active hit (Vimium V extending, mouse
+            // drag, anything).
         }, true);
+
+        // ::selection is transparent while body.pdf2html-search-entered is
+        // set so the orange active-hit paint shows through. As soon as the
+        // Selection is modified by anything that isn't our own n/N (Vimium
+        // V extending via Selection.modify, click, mouse drag, …), flip
+        // ::selection back to the default blue so the user can actually see
+        // what's being selected. Range identity, not event source, is the
+        // cleanest signal.
+        document.addEventListener('selectionchange', function () {
+            if (!document.body.classList.contains('pdf2html-search-entered')) return;
+            var sel = window.getSelection();
+            if (!sel || !sel.rangeCount) {
+                document.body.classList.remove('pdf2html-search-entered');
+                return;
+            }
+            var activeR = searchState.hits[searchState.activeIdx];
+            if (!activeR) {
+                document.body.classList.remove('pdf2html-search-entered');
+                return;
+            }
+            var selR = sel.getRangeAt(0);
+            try {
+                if (selR.compareBoundaryPoints(Range.START_TO_START, activeR) !== 0
+                 || selR.compareBoundaryPoints(Range.END_TO_END, activeR) !== 0) {
+                    document.body.classList.remove('pdf2html-search-entered');
+                }
+            } catch (e) {
+                // Detached / cross-document range — drop the class to be safe.
+                document.body.classList.remove('pdf2html-search-entered');
+            }
+        });
     }
 
     function openSearch() {
@@ -2170,26 +2329,15 @@
     }
 
     function closeSearch() {
-        // If a hit was activated (Enter was pressed), promote it to a real
-        // browser Selection on the way out. The yellow/orange highlights go
-        // away, but the word ends up "marked" — so Vimium's V, ⌘C, etc all
-        // work on it as though the reader had dragged-selected it manually.
-        var promote = (searchState.entered
-            && searchState.activeIdx >= 0
-            && searchState.hits[searchState.activeIdx]) || null;
+        // Selection was already promoted on Enter by focusActiveHit, so Vimium
+        // V / ⌘C already work. Esc just tears down the visual affordances and
+        // leaves whatever Selection is current alone. Drop the body class so
+        // the ::selection color reverts from orange back to the default blue.
         var ex = document.getElementById('pdf2html-search');
         if (ex) ex.remove();
         clearSearchHighlights();
+        document.body.classList.remove('pdf2html-search-entered');
         searchState = { hits: [], activeIdx: -1, entered: false };
-        if (promote) {
-            try {
-                var sel = window.getSelection();
-                if (sel) {
-                    sel.removeAllRanges();
-                    sel.addRange(promote);
-                }
-            } catch (e) { /* detached / cross-origin range — ignore */ }
-        }
     }
 
     function clearSearchHighlights() {
@@ -2232,7 +2380,8 @@
             return;
         }
 
-        var qLower = q.toLowerCase();
+        var cs = isSearchCaseSensitive();
+        var needle = cs ? q : q.toLowerCase();
         var pages = visiblePageFrames();
         var inactive = new Highlight();
 
@@ -2244,17 +2393,17 @@
             while ((node = walker.nextNode())) {
                 var text = node.nodeValue;
                 if (!text) continue;
-                var lower = text.toLowerCase();
+                var hay = cs ? text : text.toLowerCase();
                 var cursor = 0, idx;
-                while ((idx = lower.indexOf(qLower, cursor)) !== -1) {
+                while ((idx = hay.indexOf(needle, cursor)) !== -1) {
                     var r = document.createRange();
                     try {
                         r.setStart(node, idx);
-                        r.setEnd(node, idx + qLower.length);
+                        r.setEnd(node, idx + needle.length);
                         searchState.hits.push(r);
                         inactive.add(r);
                     } catch (e) { /* degenerate range, skip */ }
-                    cursor = idx + qLower.length;
+                    cursor = idx + needle.length;
                 }
             }
         });
@@ -2308,6 +2457,9 @@
 
         // Rebuild the two highlight groups so the active range moves between
         // them. The CSS Highlight API has no per-range style — we partition.
+        // active.priority > 0 keeps the orange paint on top of the browser's
+        // built-in ::selection paint that we set below (custom-highlight
+        // priority can outrank ::selection in Chromium).
         try {
             if (window.CSS && CSS.highlights) {
                 var inactive = new Highlight();
@@ -2316,6 +2468,7 @@
                 }
                 var active = new Highlight();
                 active.add(range);
+                active.priority = 10;
                 CSS.highlights.set('pdf2html-search-hit', inactive);
                 CSS.highlights.set('pdf2html-search-active', active);
             }
@@ -2326,6 +2479,24 @@
             var delta = scrollDeltaForRect(pc, range.getBoundingClientRect());
             if (Math.abs(delta) >= 1) pc.scrollBy({ top: delta, behavior: 'smooth' });
         }
+
+        // Promote the active range to a real browser Selection so Vimium's V
+        // and ⌘C work immediately after Enter — no Esc-to-promote detour.
+        // Suppress the cursor-pin selectionchange reaction briefly so its
+        // scroll doesn't fight our own smooth-scroll above. The body class
+        // recolors ::selection to orange so the native selection paint
+        // doesn't cover our custom active highlight (Chromium paints
+        // built-in pseudos on top of custom highlights regardless of
+        // Highlight.priority).
+        searchSuppressPinUntil = performance.now() + 500;
+        try {
+            var sel = window.getSelection();
+            if (sel) {
+                sel.removeAllRanges();
+                sel.addRange(range);
+            }
+            document.body.classList.add('pdf2html-search-entered');
+        } catch (e) { /* detached / cross-origin range — ignore */ }
 
         updateSearchCount();
     }
