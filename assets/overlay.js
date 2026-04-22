@@ -1369,6 +1369,19 @@
 
         function cycleMatch(delta) {
             if (state.matches.length === 0) return;
+            // Tab on an unambiguous command completion (single match, no
+            // space yet) expands straight into arg mode — skips the "Tab
+            // then Space" two-step once there's only one command it could
+            // be. Multi-match cycling still uses Space/Enter to commit.
+            if (state.matches.length === 1 && input.value.indexOf(' ') === -1) {
+                var only = state.matches[0];
+                var cmd = findCommand(only.value);
+                if (cmd && cmd.argCompleter) {
+                    input.value = only.value + ' ';
+                    computeMatches(); renderMatches();
+                    return;
+                }
+            }
             var n = state.matches.length;
             state.idx = ((state.idx + delta) % n + n) % n;
             // Fill input with the match; don't recompute (we want cycling to

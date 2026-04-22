@@ -199,24 +199,6 @@ python3 "$REPO_DIR/scripts/inject-overlay.py" \
     "$OUT_DIR/$OUT_NAME" "${PDF_NAME%.*}" "$OVERLAY_VERSION" \
     || fail "overlay injection failed"
 
-# Extract PDF metadata into <hash>/meta.json if missing. Failures are
-# non-fatal — plenty of PDFs have no /Author; we just end up with an
-# empty (or partial) meta.json that the overlay falls back from.
-if [[ ! -f "$OUT_DIR/meta.json" ]]; then
-    "$REPO_DIR/scripts/extract-pdf-meta.sh" \
-        "$PDF_DIR/$PDF_NAME" "$OUT_DIR/meta.json" \
-        || log "meta extraction failed for $PDF_NAME"
-fi
-
-# Per-page thumbnails → <hash>/thumbs/N.jpg. Non-fatal if pdftocairo is
-# unavailable or a specific page can't rasterize — overlay falls back to
-# skeleton line cards for any page whose image 404s.
-if [[ ! -d "$OUT_DIR/thumbs" ]]; then
-    "$REPO_DIR/scripts/extract-pdf-thumbs.sh" \
-        "$PDF_DIR/$PDF_NAME" "$OUT_DIR/thumbs" \
-        || log "thumb extraction failed for $PDF_NAME"
-fi
-
 # Verify the daemon is up. launchd owns it (phase 5) — this script must NOT
 # fall back to starting `python3 -m http.server`, because the daemon's GET /
 # returns 404 (no route matches the root), which would trick the old
@@ -245,36 +227,51 @@ URL="http://localhost:${PORT}/${HASH}/${ENCODED_NAME}"
     printf '%s\t%s\t%s\t%s\n' "$(date -Iseconds)" "$SOURCE_REF" "$HASH" "$OUT_DIR/$OUT_NAME"
 } > "$MAP_FILE.tmp" && mv "$MAP_FILE.tmp" "$MAP_FILE"
 
-# Navigate the *originating* tab in-place. We captured TAB_URL up-front; now
-# we find whichever tab still has that URL and swap it for the viewer URL.
-#   - Match by URL, not by "active tab of front window" — 1-2min has passed;
-#     the user may have switched tabs, windows, or apps, and we must not
-#     clobber whatever's currently frontmost.
-#   - If the user closed the tab or navigated it away, no match → we silently
-#     skip. The viewer is in cache; next click opens it.
-#   - Passed as env vars (system attribute) so URLs with shell-special chars
-#     can't break osascript quoting.
-#   - Guarded by "is running" so we never auto-launch Comet just to navigate.
-#   - No `activate` call anywhere: Comet stays in whatever focus state it
-#     was in, and the updated tab doesn't become active unless it already was.
-if osascript -e 'application "Comet" is running' 2>/dev/null | grep -q true; then
-    TAB_URL="$TAB_URL" NEW_URL="$URL" osascript <<'EOF' >/dev/null 2>&1
-set origURL to system attribute "TAB_URL"
-set newURL to system attribute "NEW_URL"
-tell application "Comet"
-    repeat with w in windows
-        repeat with t in tabs of w
-            if URL of t is origURL then
-                set URL of t to newURL
-                return
-            end if
-        end repeat
-    end repeat
-end tell
-EOF
-fi
+# Navigate the *originating* tab in-place — extension-mediated so we don't
+# pull Comet to the front. Post {from_url, to_url} to the daemon; the
+# extension's long-poll picks it up and calls chrome.tabs.update(tabId, {url})
+# which has no focus side effects.
+#
+# Compared to the AppleScript path we had before, this trades a sub-second
+# focus flash for a ≤25s worst-case delay (the extension's long-poll horizon).
+# Fire-and-forget; if the signal drops on the floor (daemon down, extension
+# suspended and SW restart fails), the viewer is still in cache and the next
+# click on the PDF link hits the static redirect rule.
+#
+# JSON built with python3 -c so URLs with shell-special chars can't break
+# the request body (matches the url-encoding pattern used earlier in script).
+NAV_PAYLOAD=$(python3 -c "import json, sys; print(json.dumps({'from_url': sys.argv[1], 'to_url': sys.argv[2]}))" "$TAB_URL" "$URL")
+curl -sS --max-time 2 -X POST \
+    -H 'Content-Type: application/json' \
+    -d "$NAV_PAYLOAD" \
+    "http://localhost:${PORT}/signal/navigate" \
+    >/dev/null 2>&1 \
+    || log "navigate signal POST failed (non-fatal)"
 
 # Raycast HUD already fired when the wrapper exited; we're detached now,
 # so the user needs a final macOS notification to know the tab has actually
 # been swapped (especially for the 1-2min cache-miss case).
 notify "Opened $PDF_NAME"
+
+# Meta + per-page thumbs run AFTER the tab-nav signal — both are non-critical
+# (overlay falls back to empty meta and skeleton thumb cards), and on 100+
+# page textbooks pdftocairo adds 5–15s that used to block the tab swap.
+# Run them in parallel; `wait` at end keeps this process alive until they
+# finish so log output stays coherent and no jobs get orphaned.
+if [[ ! -f "$OUT_DIR/meta.json" ]]; then
+    (
+        "$REPO_DIR/scripts/extract-pdf-meta.sh" \
+            "$PDF_DIR/$PDF_NAME" "$OUT_DIR/meta.json" \
+            || log "meta extraction failed for $PDF_NAME"
+    ) &
+fi
+
+if [[ ! -d "$OUT_DIR/thumbs" ]]; then
+    (
+        "$REPO_DIR/scripts/extract-pdf-thumbs.sh" \
+            "$PDF_DIR/$PDF_NAME" "$OUT_DIR/thumbs" \
+            || log "thumb extraction failed for $PDF_NAME"
+    ) &
+fi
+
+wait

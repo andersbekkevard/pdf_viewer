@@ -190,16 +190,108 @@ async function _runSync() {
     );
 }
 
+// -----------------------------------------------------------------------------
+// Navigation signals — extension-mediated tab navigation.
+//
+// The convert script POSTs {from_url, to_url} to the daemon after a cache-miss
+// conversion finishes. This long-poll loop picks up those signals and calls
+// chrome.tabs.update(tabId, {url}) on matching tabs.
+//
+// Why not AppleScript from the convert script itself: Chromium's Apple Event
+// handler pulls the browser to the front on *any* tab mutation, causing a
+// visible focus flash even with snapshot-and-restore tricks. chrome.tabs.update
+// has no such side effect.
+//
+// MV3 service workers die after ~30s of inactivity, but an in-flight fetch
+// counts as activity — so while the long-poll holds, the SW stays alive.
+// If the SW *does* die between fetches, the periodic alarm (0.5min) wakes
+// it up and startNavPollLoop() restarts the loop.
+// -----------------------------------------------------------------------------
+
+const NAV_POLL_TIMEOUT_SEC = 25;
+const NAV_POLL_ERROR_BACKOFF_MS = 2000;
+
+let _navPollRunning = false;
+
+async function navigateTab({ from_url, to_url }) {
+    try {
+        // `chrome.tabs.query({url: matchPattern})` ignores query strings, so
+        // we query all tabs and filter by exact-URL match (the from_url the
+        // convert script captured includes the `_pdfvw=passthrough` marker
+        // and must match byte-for-byte).
+        const allTabs = await chrome.tabs.query({});
+        const matches = allTabs.filter(t => t.url === from_url);
+        if (matches.length === 0) {
+            console.log(`pdf_viewer: nav signal — no tab with URL ${from_url}`);
+            return;
+        }
+        for (const tab of matches) {
+            await chrome.tabs.update(tab.id, { url: to_url });
+            console.log(
+                `pdf_viewer: navigated tab ${tab.id}: ${from_url} → ${to_url}`
+            );
+        }
+    } catch (e) {
+        console.warn('pdf_viewer: navigateTab failed —', e.message);
+    }
+}
+
+async function startNavPollLoop() {
+    if (_navPollRunning) return;
+    _navPollRunning = true;
+    console.log('pdf_viewer: nav poll loop starting');
+    try {
+        while (true) {
+            try {
+                const resp = await fetch(
+                    `${DAEMON}/signal/navigate/wait?timeout=${NAV_POLL_TIMEOUT_SEC}`,
+                    { cache: 'no-store' }
+                );
+                if (!resp.ok) {
+                    console.warn(
+                        `pdf_viewer: /signal/navigate/wait → ${resp.status}`
+                    );
+                    await new Promise(r => setTimeout(r, NAV_POLL_ERROR_BACKOFF_MS));
+                    continue;
+                }
+                const signals = await resp.json();
+                for (const sig of signals) {
+                    await navigateTab(sig);
+                }
+            } catch (e) {
+                // Daemon down / network hiccup. Back off before retry so we
+                // don't pin CPU if the daemon is hard-down.
+                console.warn('pdf_viewer: nav poll fetch failed —', e.message);
+                await new Promise(r => setTimeout(r, NAV_POLL_ERROR_BACKOFF_MS));
+            }
+        }
+    } finally {
+        _navPollRunning = false;
+    }
+}
+
 // Fire on every plausible re-entry point, so new conversions become
 // interceptable without a browser restart.
-chrome.runtime.onInstalled.addListener(syncCachedRules);
-chrome.runtime.onStartup.addListener(syncCachedRules);
+chrome.runtime.onInstalled.addListener(() => {
+    syncCachedRules();
+    startNavPollLoop();
+});
+chrome.runtime.onStartup.addListener(() => {
+    syncCachedRules();
+    startNavPollLoop();
+});
 
 chrome.alarms.create(SYNC_ALARM, { periodInMinutes: 0.5 });
 chrome.alarms.onAlarm.addListener((alarm) => {
-    if (alarm.name === SYNC_ALARM) syncCachedRules();
+    if (alarm.name === SYNC_ALARM) {
+        syncCachedRules();
+        // Restart the nav loop if it died (SW was suspended and fetch got
+        // cancelled). The flag prevents doubling up when it's still alive.
+        startNavPollLoop();
+    }
 });
 
-// Also sync once on service-worker startup (covers the case where the SW
+// Also fire once on service-worker startup (covers the case where the SW
 // was terminated and got woken up by an event other than the ones above).
 syncCachedRules();
+startNavPollLoop();

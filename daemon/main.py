@@ -21,14 +21,17 @@ Run:
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import pathlib
+import time
 import urllib.parse
 from typing import Optional
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 
 import visits
 
@@ -136,6 +139,76 @@ def cache_urls():
                 })
                 seen.add(hash_)
     return entries
+
+
+# -----------------------------------------------------------------------------
+# Navigation signals — extension-mediated tab navigation.
+#
+# The convert script POSTs {from_url, to_url} here when a cache-miss
+# conversion finishes. The browser extension long-polls /signal/navigate/wait,
+# picks up the signal, and calls chrome.tabs.update(tabId, {url}). That API
+# doesn't touch focus at all, which is the whole reason we're going this
+# route instead of AppleScript (Apple Events pull Chromium to the front on
+# any tab mutation, causing a visible flash even with snapshot+restore).
+#
+# Signals have a 60s TTL. If the extension is asleep and misses the window,
+# the viewer is still in cache — next click on the PDF link hits the static
+# redirect rule and opens it anyway.
+# -----------------------------------------------------------------------------
+
+_NAV_SIGNAL_TTL_SEC = 60
+_pending_nav_signals: list[dict] = []
+_nav_signal_event: Optional[asyncio.Event] = None
+
+
+def _nav_event() -> asyncio.Event:
+    # Lazy-init so the event binds to the running loop (FastAPI creates one
+    # per process). Accessing asyncio.Event() at import time binds to the
+    # wrong loop and `.set()` becomes a no-op for awaiters.
+    global _nav_signal_event
+    if _nav_signal_event is None:
+        _nav_signal_event = asyncio.Event()
+    return _nav_signal_event
+
+
+def _purge_expired_nav_signals() -> None:
+    cutoff = time.time() - _NAV_SIGNAL_TTL_SEC
+    _pending_nav_signals[:] = [
+        s for s in _pending_nav_signals if s["created_at"] >= cutoff
+    ]
+
+
+class NavigateSignal(BaseModel):
+    from_url: str
+    to_url: str
+
+
+@app.post("/signal/navigate")
+async def signal_navigate(sig: NavigateSignal):
+    _purge_expired_nav_signals()
+    _pending_nav_signals.append({
+        "from_url": sig.from_url,
+        "to_url": sig.to_url,
+        "created_at": time.time(),
+    })
+    _nav_event().set()
+    return {"queued": True, "pending": len(_pending_nav_signals)}
+
+
+@app.get("/signal/navigate/wait")
+async def signal_navigate_wait(timeout: float = Query(25.0, ge=0.0, le=60.0)):
+    _purge_expired_nav_signals()
+    if not _pending_nav_signals:
+        ev = _nav_event()
+        try:
+            await asyncio.wait_for(ev.wait(), timeout=timeout)
+        except asyncio.TimeoutError:
+            return []
+        ev.clear()
+    _purge_expired_nav_signals()
+    out = list(_pending_nav_signals)
+    _pending_nav_signals.clear()
+    return out
 
 
 @app.get("/healthz")
