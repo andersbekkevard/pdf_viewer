@@ -692,7 +692,7 @@
                     + cRow(':scrolloff N', ':so', 'Scrolloff band at N% (e.g. :so 25)')
                     + cRow(':buffer N', ':buf', 'Render ±N pages around viewport')
                     + cRow(':all', '—', 'Toggle render-all pages')
-                    + cRow(':yank', ':y', 'Copy "chapter · p. N" to clipboard')
+                    + cRow(':yank <kind>', ':y', 'Copy ref / page / chapter / document')
                     + cRow(':counter', ':num', 'Toggle page counter')
                     + cRow(':zoom N', '—', 'Set page-container zoom')
                     + cRow(':help', ':h', 'Open this cheatsheet')
@@ -982,9 +982,25 @@
         { name: 'all',     aliases: [],       desc: 'toggle render-all',
           argCompleter: null,
           handler: function () { toggleCheckboxAndFire('pdf2html-all-input'); } },
-        { name: 'yank',    aliases: ['y'],    desc: 'copy "chapter · p. N"',
-          argCompleter: null,
-          handler: function () { yankCurrentLocation(); } },
+        { name: 'yank',    aliases: ['y'],    desc: 'copy content (ref/page/chapter/doc)',
+          argCompleter: function (tail) {
+              // Order: ref → document → chapter → page. Reversed in spirit
+              // with the project's "priority at the bottom" convention —
+              // `page` (the narrowest, most-frequent selection) sits last,
+              // so `:y<space><Enter>` yanks just the current page.
+              var options = [
+                  { value: 'yank ref',      display: 'ref',      desc: 'chapter · p. N (meta)' },
+                  { value: 'yank document', display: 'document', desc: 'full document text' },
+                  { value: 'yank chapter',  display: 'chapter',  desc: 'current chapter text' },
+                  { value: 'yank page',     display: 'page',     desc: 'current page text' },
+              ];
+              var lt = String(tail || '').toLowerCase().trim();
+              if (!lt) return options;
+              return options.filter(function (o) {
+                  return o.display.indexOf(lt) === 0;
+              });
+          },
+          handler: function (a) { dispatchYank(a); } },
         { name: 'counter', aliases: ['num'],  desc: 'toggle page counter',
           argCompleter: null,
           handler: function () { if (window.__pdf2htmlTogglePageno) window.__pdf2htmlTogglePageno(); } },
@@ -1303,6 +1319,90 @@
         }
         var text = (chapter ? chapter + ' · ' : '') + 'p. ' + (bestIdx + 1);
         if (navigator.clipboard) navigator.clipboard.writeText(text);
+    }
+
+    // Text extraction — yanks actual content for notes / quoting workflow.
+    // pdf2htmlEX lays out each visual line as a `.t` div inside `.pc`; joining
+    // them with '\n' preserves the per-line structure that plain textContent
+    // on `.pc` would collapse. Hidden pages (display:none outside render
+    // window) still have their DOM — textContent traverses regardless.
+    function pageText(pageNum) {
+        var pf = document.getElementById('pf' + pageNum.toString(16));
+        if (!pf) return '';
+        var pc = pf.querySelector('.pc');
+        if (!pc) return '';
+        var lines = pc.querySelectorAll('.t');
+        if (!lines.length) return (pc.textContent || '').trim();
+        var out = [];
+        for (var i = 0; i < lines.length; i++) {
+            var t = (lines[i].textContent || '').trim();
+            if (t) out.push(t);
+        }
+        return out.join('\n');
+    }
+
+    function pageRangeText(startPage, endPageExcl) {
+        var out = [];
+        for (var p = startPage; p < endPageExcl; p++) {
+            var t = pageText(p);
+            if (t) out.push(t);
+        }
+        return out.join('\n\n');
+    }
+
+    function totalPages() {
+        return document.querySelectorAll('.pf').length;
+    }
+
+    // Active chapter → [startPage, endPage). End is the next outline entry
+    // with strictly greater page (so subsections within the same page don't
+    // terminate the range early), or document end.
+    function activeChapterRange() {
+        var active = document.querySelector('#outline a.pdf2html-active');
+        if (!active) return null;
+        var m = (active.getAttribute('href') || '').match(/#pf([0-9a-f]+)/i);
+        if (!m) return null;
+        var startPage = parseInt(m[1], 16);
+        var chaps = sortedChapterPages();
+        var endPage = totalPages() + 1;
+        for (var i = 0; i < chaps.length; i++) {
+            if (chaps[i].page > startPage) { endPage = chaps[i].page; break; }
+        }
+        return {
+            start: startPage,
+            end: endPage,
+            label: (active.textContent || '').replace(/\s+/g, ' ').trim(),
+        };
+    }
+
+    function writeClip(text) {
+        if (text && navigator.clipboard) navigator.clipboard.writeText(text);
+    }
+
+    function yankPage() {
+        writeClip(pageText(currentPage));
+    }
+
+    function yankChapter() {
+        var r = activeChapterRange();
+        if (!r) return;
+        var body = pageRangeText(r.start, r.end);
+        writeClip((r.label ? r.label + '\n\n' : '') + body);
+    }
+
+    function yankDocument() {
+        var body = pageRangeText(1, totalPages() + 1);
+        if (!body) return;
+        var title = (document.title || 'Document').trim();
+        writeClip(title + '\n\n' + body);
+    }
+
+    function dispatchYank(kind) {
+        var k = (kind || '').toLowerCase().trim();
+        if (k === 'page')                     yankPage();
+        else if (k === 'chapter' || k === 'ch') yankChapter();
+        else if (k === 'document' || k === 'doc') yankDocument();
+        else                                  yankCurrentLocation();  // ref (default)
     }
 
     function registerPaletteHandler() {

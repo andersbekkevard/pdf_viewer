@@ -503,7 +503,7 @@ upgrade-cache script must preserve 100% of this.
 | `:buffer 20`     | Set render buffer to ±20 pages             |
 | `:buf 20`        | Alias for `:buffer`                        |
 | `:all`           | Toggle render-all                          |
-| `:yank` / `:y`   | Copy "Chapter · p. N" to clipboard         |
+| `:yank <kind>` / `:y <kind>` | `ref` (default, "Chapter · p. N") · `page` · `chapter` · `document` — copies metadata or extracted text to clipboard |
 | `:counter` / `:num` | Toggle page counter                     |
 | `:help` / `:h`   | Open cheatsheet                            |
 
