@@ -222,6 +222,7 @@ the migration window.
 | `⌘.` / `⌘B` | Toggle sidebar                            |
 | `/` / `s` | Find in visible pages                       |
 | `A`      | Toggle render-all pages                      |
+| `e` / `q` / `E` | Next / prev page; active text selection extends pagewise |
 | `⌘⇧.`    | Toggle page counter                          |
 | `:`      | Open command palette                         |
 | `⌘K`     | Library picker (palette seeded with `:open `)|

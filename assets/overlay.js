@@ -428,6 +428,7 @@
                     { value: 10, label: '±10' },
                     { value: 20, label: '±20' },
                     { value: 50, label: '±50' },
+                    { value: 100, label: '±100' },
                 ], curBuffer, function (v) {
                     setInputValueAndFire('pdf2html-buffer-input', v);
                 })),
@@ -807,8 +808,8 @@
                     + kRow([['⌘','.'], ['⌘','B']], 'Toggle sidebar')
                     + kRow([['←','h'], ['→','l']], 'Sidebar: Outline / Pages tab (when open)')
                     + kRow([['A']], 'Toggle render-all pages')
-                    + kRow([['e'], ['q'], ['E']], 'Next / prev page (q aliases E; N prefix works on all three)')
-                    + kRow([['c'], ['C']], 'Next / prev chapter (N prefix: 3c jumps 3)')
+                    + kRow([['e'], ['q'], ['E']], 'Next / prev page; active text selection extends pagewise instead')
+                    + kRow([['c'], ['C']], 'Next / prev chapter; active browser selection + c selects full chapter')
                     + kRow([['⌘','⇧','.']], 'Toggle page counter')
                     + '<h3>Modes</h3>'
                     + kRow([[':']], 'Command palette (Tab / ^J / ^K to cycle)')
@@ -1468,6 +1469,138 @@
         if (el) el.scrollIntoView({ block: 'start' });
     }
 
+    function pageElement(pageNum) {
+        if (!pageNum || pageNum < 1) return null;
+        return document.getElementById('pf' + pageNum.toString(16));
+    }
+
+    function pageNumberFromElement(pf) {
+        if (!pf || !pf.id) return null;
+        var m = pf.id.match(/^pf([0-9a-f]+)$/i);
+        return m ? parseInt(m[1], 16) : null;
+    }
+
+    function pageElementFromNode(node) {
+        if (!node) return null;
+        var el = node.nodeType === 1 ? node : node.parentElement;
+        return el && el.closest ? el.closest('.pf') : null;
+    }
+
+    function pageNumberFromNode(node) {
+        return pageNumberFromElement(pageElementFromNode(node));
+    }
+
+    function pageTextBoundaryPosition(pageNum, towardsStart) {
+        var pf = pageElement(pageNum);
+        if (!pf) return null;
+        var pc = pf.querySelector('.pc');
+        if (!pc) return null;
+        var walker = document.createTreeWalker(pc, NodeFilter.SHOW_TEXT);
+        var node, pick = null;
+        while ((node = walker.nextNode())) {
+            if (!node.nodeValue || node.nodeValue.length === 0) continue;
+            pick = node;
+            if (towardsStart) break;
+        }
+        if (!pick) return null;
+        return {
+            node: pick,
+            offset: towardsStart ? 0 : pick.nodeValue.length,
+        };
+    }
+
+    function ensurePageRangeRendered(startPage, endPage) {
+        if (!startPage || !endPage) return;
+        var from = Math.min(startPage, endPage);
+        var to = Math.max(startPage, endPage);
+        for (var p = from; p <= to; p++) {
+            var pf = pageElement(p);
+            if (pf) pf.classList.add('pdf2html-force');
+        }
+    }
+
+    function selectionPageSpan(sel) {
+        if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return null;
+        var anchorPage = pageNumberFromNode(sel.anchorNode);
+        var focusPage = pageNumberFromNode(sel.focusNode);
+        if (!anchorPage || !focusPage) return null;
+        return {
+            start: Math.min(anchorPage, focusPage),
+            end: Math.max(anchorPage, focusPage),
+            anchor: anchorPage,
+            focus: focusPage,
+        };
+    }
+
+    function extendSelectionByPage(delta) {
+        var sel = window.getSelection();
+        var span = selectionPageSpan(sel);
+        if (!span || !sel || typeof sel.extend !== 'function') return false;
+        var total = totalPages();
+        if (!total) return false;
+        var targetPage = Math.max(1, Math.min(total, span.focus + delta));
+        if (targetPage === span.focus) return true;
+        var pos = pageTextBoundaryPosition(targetPage, delta > 0);
+        if (!pos) return false;
+        ensurePageRangeRendered(span.anchor, targetPage);
+        document.body.classList.remove('pdf2html-search-entered');
+        try {
+            sel.extend(pos.node, pos.offset);
+            return true;
+        } catch (e) {
+            return false;
+        }
+    }
+
+    function chapterRangeForPage(pageNum) {
+        if (!pageNum || pageNum < 1) return null;
+        var chaps = sortedChapterPages();
+        if (!chaps.length) return null;
+        var idx = -1;
+        for (var i = 0; i < chaps.length; i++) {
+            if (chaps[i].page <= pageNum) idx = i; else break;
+        }
+        if (idx === -1) idx = 0;
+        var startPage = chaps[idx].page;
+        var endPage = totalPages() + 1;
+        for (var j = idx + 1; j < chaps.length; j++) {
+            if (chaps[j].page > startPage) { endPage = chaps[j].page; break; }
+        }
+        return {
+            start: startPage,
+            end: endPage,
+            label: chaps[idx].label,
+        };
+    }
+
+    function selectCurrentChapterFromSelection() {
+        var sel = window.getSelection();
+        var span = selectionPageSpan(sel);
+        if (!span || !sel) return false;
+        var chapter = chapterRangeForPage(span.focus);
+        if (!chapter) return false;
+        var startPos = pageTextBoundaryPosition(chapter.start, true);
+        var endPos = pageTextBoundaryPosition(chapter.end - 1, false);
+        if (!startPos || !endPos) return false;
+        ensurePageRangeRendered(chapter.start, chapter.end - 1);
+        document.body.classList.remove('pdf2html-search-entered');
+        try {
+            // Chapter-promotion is a selection reshape. Let the browser's own
+            // selection scroll behavior carry the viewport, and only suppress
+            // our cursor-pin fallback so we don't add a second competing
+            // smooth-scroll on top.
+            searchSuppressPinUntil = performance.now() + 500;
+            var range = document.createRange();
+            range.setStart(startPos.node, startPos.offset);
+            range.setEnd(endPos.node, endPos.offset);
+            sel.removeAllRanges();
+            sel.addRange(range);
+            return true;
+        } catch (e) {
+            return false;
+        }
+    }
+
     // Like gotoPage, but bypasses #page-container's scroll-padding so the
     // target page's top aligns flush with the viewport top. An 8 px lead-in
     // keeps a sliver of inter-page gap visible (no prev-page content, but a
@@ -1566,21 +1699,7 @@
     // with strictly greater page (so subsections within the same page don't
     // terminate the range early), or document end.
     function activeChapterRange() {
-        var active = document.querySelector('#outline a.pdf2html-active');
-        if (!active) return null;
-        var m = (active.getAttribute('href') || '').match(/#pf([0-9a-f]+)/i);
-        if (!m) return null;
-        var startPage = parseInt(m[1], 16);
-        var chaps = sortedChapterPages();
-        var endPage = totalPages() + 1;
-        for (var i = 0; i < chaps.length; i++) {
-            if (chaps[i].page > startPage) { endPage = chaps[i].page; break; }
-        }
-        return {
-            start: startPage,
-            end: endPage,
-            label: (active.textContent || '').replace(/\s+/g, ' ').trim(),
-        };
+        return chapterRangeForPage(currentPage);
     }
 
     function writeClip(text) {
@@ -1679,7 +1798,10 @@
     //   c / C : ±1 chapter (10c = +10 chapters, 10C = -10 chapters)
     // Bare keys = ±1. Digits buffer until a motion fires, 1.5 s elapses, or
     // any other key cancels. Requires Vimium passthrough for `e q E c C 0-9`
-    // on localhost:7435, else Vimium swallows the digits or letters.
+    // on localhost:7435, else Vimium swallows the digits or letters. When the
+    // page receives the key and a browser Selection is active, e/q/E extend
+    // the focus end pagewise instead of jumping the viewport, and bare `c`
+    // promotes that selection to the full chapter containing its focus page.
     // ------------------------------------------------------------------------
     function registerPageJumpHandler() {
         var buf = '';
@@ -1707,10 +1829,13 @@
             clearBuf();
             e.preventDefault(); e.stopPropagation();
             if (k === 'e' || k === 'q' || k === 'E') {
-                var total = document.querySelectorAll('.pf').length || 1;
                 var delta = k === 'e' ? count : -count;
-                snapToPage(Math.min(total, Math.max(1, currentPage + delta)));
+                if (!extendSelectionByPage(delta)) {
+                    var total = document.querySelectorAll('.pf').length || 1;
+                    snapToPage(Math.min(total, Math.max(1, currentPage + delta)));
+                }
             } else {
+                if (k === 'c' && selectCurrentChapterFromSelection()) return;
                 gotoChapterBy(k === 'c' ? count : -count);
             }
         }, true);
@@ -1839,6 +1964,7 @@
         var idx = new Map();
         pages.forEach(function (p, i) { idx.set(p, i); });
         var visible = new Set();
+        var selectionSpan = null;
         var raf = null;
         var allForced = false;
 
@@ -1866,12 +1992,26 @@
                 from = Math.max(0, first - buffer);
                 to = Math.min(pages.length - 1, last + buffer);
             }
+            if (selectionSpan) {
+                from = Math.min(from, selectionSpan.start - 1);
+                to = Math.max(to, selectionSpan.end - 1);
+            }
             for (var j = 0; j < pages.length; j++) {
                 var want = j >= from && j <= to;
                 if (want !== pages[j].classList.contains('pdf2html-force')) {
                     pages[j].classList.toggle('pdf2html-force', want);
                 }
             }
+        }
+
+        function syncSelectionSpan() {
+            var next = selectionPageSpan(document.getSelection());
+            var changed = !selectionSpan !== !next
+                || (selectionSpan && next
+                    && (selectionSpan.start !== next.start || selectionSpan.end !== next.end));
+            if (!changed) return;
+            selectionSpan = next;
+            sched();
         }
 
         function sched() {
@@ -1893,6 +2033,7 @@
             threshold: 0,
         });
         pages.forEach(function (p) { observer.observe(p); });
+        document.addEventListener('selectionchange', syncSelectionSpan);
 
         mountConfigPanel(buffer, renderAll, function (newBuffer) {
             buffer = newBuffer;
@@ -1901,6 +2042,7 @@
             renderAll = newAll;
             sched();
         });
+        syncSelectionSpan();
     }
 
     // The settings modal and palette commands talk to state through these

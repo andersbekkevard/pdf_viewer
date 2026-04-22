@@ -15,8 +15,8 @@ For the rationale on the overall keyboard strategy, see
 | `/` · `s`              | Find in visible pages (Enter jump, `n` / `N` cycle)           |
 | `←` / `→` · `h` / `l`  | Switch sidebar tab (Outline / Pages) — only when sidebar open |
 | `A`                    | Toggle render-all pages                                       |
-| `e` / `q` / `E`        | Next / prev page; `q` aliases `E`; count-prefixed (`10e` = +10, `10q` = `10E` = −10) |
-| `c` / `C`              | Next / prev chapter; count-prefixed (`3c` = +3, `3C` = −3)    |
+| `e` / `q` / `E`        | Next / prev page; active text selection extends pagewise instead; `q` aliases `E`; count-prefixed (`10e` = +10, `10q` = `10E` = −10) |
+| `c` / `C`              | Next / prev chapter; active browser selection + `c` selects the whole chapter; count-prefixed (`3c` = +3, `3C` = −3)    |
 | `⌘⇧.`                  | Toggle page counter                                           |
 | `:`                    | Open command palette                                          |
 | `⌘K`                   | Library picker (palette pre-seeded with `:open `)             |
@@ -51,6 +51,15 @@ cancels. Bare `C` preserves the prev-chapter threshold (mid-section
 `C` backtracks to the section start); multi-step `NC` skips that rule.
 Every other numeric-argument command lives in the palette — no general
 `[N]<key>` parser.
+
+When the browser has a non-collapsed text selection, `e` / `q` / `E`
+stop being viewport jumps and instead move the selection's focus end by
+pages while leaving the anchor fixed. Forward motion lands at the start
+of the target page; backward motion lands at the end.
+
+With a non-collapsed browser text selection, bare `c` selects the entire
+outline chapter containing the selection focus. `C` keeps its existing
+previous-chapter navigation behavior.
 
 ## Permanently rejected (Vimium conflicts)
 
