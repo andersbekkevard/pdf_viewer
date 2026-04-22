@@ -199,7 +199,7 @@ next open re-converts.
 ### 5. Vimium exclusion rule
 
 Add `localhost:7435` to Vimium's "Keys to pass through" with the keys
-`? s / n N h l`, otherwise Vimium swallows them before the overlay's
+`? s / n N h l e q E c C 0 1 2 3 4 5 6 7 8 9`, otherwise Vimium swallows them before the overlay's
 handlers see them. One-time setup in the Vimium options page.
 
 ### 6. Docker Desktop

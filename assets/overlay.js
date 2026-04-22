@@ -807,7 +807,7 @@
                     + kRow([['⌘','.'], ['⌘','B']], 'Toggle sidebar')
                     + kRow([['←','h'], ['→','l']], 'Sidebar: Outline / Pages tab (when open)')
                     + kRow([['A']], 'Toggle render-all pages')
-                    + kRow([['e'], ['E']], 'Next / prev page (N prefix: 10e jumps 10)')
+                    + kRow([['e'], ['q'], ['E']], 'Next / prev page (q aliases E; N prefix works on all three)')
                     + kRow([['c'], ['C']], 'Next / prev chapter (N prefix: 3c jumps 3)')
                     + kRow([['⌘','⇧','.']], 'Toggle page counter')
                     + '<h3>Modes</h3>'
@@ -1675,10 +1675,10 @@
 
     // ------------------------------------------------------------------------
     // Count-prefix motion handler — the overlay's only count-prefix binding.
-    //   e / E : ±1 page (10e = +10 pages, 10E = -10 pages)
+    //   e / q / E : +1 / -1 / -1 page (10e = +10 pages, 10q = -10 pages)
     //   c / C : ±1 chapter (10c = +10 chapters, 10C = -10 chapters)
     // Bare keys = ±1. Digits buffer until a motion fires, 1.5 s elapses, or
-    // any other key cancels. Requires Vimium passthrough for `e E c C 0-9`
+    // any other key cancels. Requires Vimium passthrough for `e q E c C 0-9`
     // on localhost:7435, else Vimium swallows the digits or letters.
     // ------------------------------------------------------------------------
     function registerPageJumpHandler() {
@@ -1699,14 +1699,14 @@
                 return;
             }
             var k = e.key;
-            if (k !== 'e' && k !== 'E' && k !== 'c' && k !== 'C') {
+            if (k !== 'e' && k !== 'q' && k !== 'E' && k !== 'c' && k !== 'C') {
                 clearBuf();
                 return;
             }
             var count = parseInt(buf, 10) || 1;
             clearBuf();
             e.preventDefault(); e.stopPropagation();
-            if (k === 'e' || k === 'E') {
+            if (k === 'e' || k === 'q' || k === 'E') {
                 var total = document.querySelectorAll('.pf').length || 1;
                 var delta = k === 'e' ? count : -count;
                 snapToPage(Math.min(total, Math.max(1, currentPage + delta)));

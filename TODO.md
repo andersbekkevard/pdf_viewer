@@ -8,3 +8,18 @@
 - [ ] Customize some of the rendering for our liking
 - [ ] In addition, if all of this happens, we could make it a monoloth and ship as a single MacOS menu bar app for example
 - [ ] A MacOs menu bar that shows the progress of our current conversion etc, lightweight
+- [ ] Improve documentation and README and profile README framing. This is a structurally useful tool, because:
+
+In a transition phase, the world is still operating in .pdf file format. This is an insight from KTN: Old protocols die slowly. Need backward compatibility.
+
+The old UI surfaces like powerpoint etc are dying. Why use powerpoint when claude design does the trick, or even a simpler, natural language ingterface.
+
+Why even use code when images with detailed NL descriptions can recreate the same functionality (think Image 2 for slidedeck).
+
+Either way: these workflows still have to boil down to the .pdf format for the forseable future, as that is the format of our world. And interactive ui is less important. What is important is easily being able to use as context, select elements, mark text and feed to llms, and pinpoint exactly where I, the human, see room for improvement. And then having this with an open, programmatic API so it can integrate across all of my llm tools.
+
+Hence: Building an ergonomic pdf viewer like this is structurally important in this day and age.
+
+This is a power user tool and UI. Of course not the only group to target, but: Targeting power users is strategically sound as they will be driving the progress the next 5 years. We are dropping red-bull cans in bins at Harvard.
+
+Fun mention: I am now tackling the pdf space in the AI era, analogue to how Steipete did it in the old times.

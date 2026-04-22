@@ -15,7 +15,7 @@ For the rationale on the overall keyboard strategy, see
 | `/` · `s`              | Find in visible pages (Enter jump, `n` / `N` cycle)           |
 | `←` / `→` · `h` / `l`  | Switch sidebar tab (Outline / Pages) — only when sidebar open |
 | `A`                    | Toggle render-all pages                                       |
-| `e` / `E`              | Next / prev page; count-prefixed (`10e` = +10, `10E` = −10)   |
+| `e` / `q` / `E`        | Next / prev page; `q` aliases `E`; count-prefixed (`10e` = +10, `10q` = `10E` = −10) |
 | `c` / `C`              | Next / prev chapter; count-prefixed (`3c` = +3, `3C` = −3)    |
 | `⌘⇧.`                  | Toggle page counter                                           |
 | `:`                    | Open command palette                                          |
@@ -45,7 +45,7 @@ For the rationale on the overall keyboard strategy, see
 | `:set`                       | Open Settings modal                                                              |
 | `:help` / `:h`               | Open cheatsheet                                                                  |
 
-Count-prefix bindings are `e` / `E` (page step) and `c` / `C` (chapter
+Count-prefix bindings are `e` / `q` / `E` (page step) and `c` / `C` (chapter
 step). Digits buffer for 1.5 s or until a non-digit/non-motion key
 cancels. Bare `C` preserves the prev-chapter threshold (mid-section
 `C` backtracks to the section start); multi-step `NC` skips that rule.
@@ -80,7 +80,7 @@ That's the escape hatch.
 ## Vimium setup
 
 Add `localhost:7435` to Vimium's "Keys to pass through" with the keys
-`? s / n N h l e E c C 0 1 2 3 4 5 6 7 8 9`. Without this, Vimium
+`? s / n N h l e q E c C 0 1 2 3 4 5 6 7 8 9`. Without this, Vimium
 swallows them before the overlay's handlers see them — in particular,
-Vimium's own count buffer eats the digits in `10e`. One-time setup in
-the Vimium options page.
+Vimium's own count buffer eats the digits in `10e` / `10q`. One-time
+setup in the Vimium options page.
