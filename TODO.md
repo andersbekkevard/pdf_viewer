@@ -1,2 +1,9 @@
-- [ ] Make :open be a bit more picky on what files to show, using a zoxide based algo from the "open" db. Maybe UI for eviction
-- [ ] Acutually integrate with/fork pdf2htmlEX. Make it so the text is ordered correctly on the page from vertical spacing, so scrolling in mark mode with j, k etc doesnt jump up and down if e.g. the pdf text of figures is in a different text layer. There is obviously a lot of additional value in integrating with pdf2htmlEX. Could also rewrite it to work on arm64 (only 18k LOC, potentially), and customize some of the rendering for our liking. In addition, if all of this happens, we could make it a monoloth and ship as a single MacOS menu bar app for example.
+- [ ] Make :open be a bit more picky on what files to show, using a zoxide based algo from the "open" db
+- [ ] Maybe UI for eviction in :open
+- [ ] Add a prefix F as in tmux fingers for yanking likely sections that go together (paths, urls, but also commands, text that is separated by the other text)
+- [ ] Acutually integrate with/fork pdf2htmlEX. There is obviously a lot of additional value in integrating with pdf2htmlEX.
+- [ ] Make it so the text is ordered correctly on the page from vertical spacing, so scrolling in mark mode with j, k etc doesnt jump up and down if e.g. the pdf text of figures is in a different text layer.
+- [ ] Could also rewrite it to work on arm64 (only 18k LOC, potentially)
+- [ ] Customize some of the rendering for our liking
+- [ ] In addition, if all of this happens, we could make it a monoloth and ship as a single MacOS menu bar app for example
+- [ ] A MacOs menu bar that shows the progress of our current conversion etc, lightweight

@@ -53,7 +53,10 @@ notify() {
 fail() {
     log "FAIL: $1"
     osascript -e 'do shell script "afplay /System/Library/Sounds/Basso.aiff &"' >/dev/null 2>&1
-    notify "$1"
+    # Distinct title so macOS doesn't coalesce with any prior "pdf_viewer"
+    # banner (e.g. the pre-docker-check "Converting…" notification would
+    # otherwise replace this error message silently).
+    osascript -e "display notification \"$1\" with title \"pdf_viewer error\"" >/dev/null 2>&1
     exit 1
 }
 
@@ -242,12 +245,34 @@ URL="http://localhost:${PORT}/${HASH}/${ENCODED_NAME}"
     printf '%s\t%s\t%s\t%s\n' "$(date -Iseconds)" "$SOURCE_REF" "$HASH" "$OUT_DIR/$OUT_NAME"
 } > "$MAP_FILE.tmp" && mv "$MAP_FILE.tmp" "$MAP_FILE"
 
-# Navigate current tab in-place so back-button returns to the source PDF
-osascript -e "
-tell application \"Comet\"
-    set URL of active tab of front window to \"${URL}\"
+# Navigate the *originating* tab in-place. We captured TAB_URL up-front; now
+# we find whichever tab still has that URL and swap it for the viewer URL.
+#   - Match by URL, not by "active tab of front window" — 1-2min has passed;
+#     the user may have switched tabs, windows, or apps, and we must not
+#     clobber whatever's currently frontmost.
+#   - If the user closed the tab or navigated it away, no match → we silently
+#     skip. The viewer is in cache; next click opens it.
+#   - Passed as env vars (system attribute) so URLs with shell-special chars
+#     can't break osascript quoting.
+#   - Guarded by "is running" so we never auto-launch Comet just to navigate.
+#   - No `activate` call anywhere: Comet stays in whatever focus state it
+#     was in, and the updated tab doesn't become active unless it already was.
+if osascript -e 'application "Comet" is running' 2>/dev/null | grep -q true; then
+    TAB_URL="$TAB_URL" NEW_URL="$URL" osascript <<'EOF' >/dev/null 2>&1
+set origURL to system attribute "TAB_URL"
+set newURL to system attribute "NEW_URL"
+tell application "Comet"
+    repeat with w in windows
+        repeat with t in tabs of w
+            if URL of t is origURL then
+                set URL of t to newURL
+                return
+            end if
+        end repeat
+    end repeat
 end tell
-" >/dev/null 2>&1
+EOF
+fi
 
 # Raycast HUD already fired when the wrapper exited; we're detached now,
 # so the user needs a final macOS notification to know the tab has actually

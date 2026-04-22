@@ -22,7 +22,17 @@
 
 export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
 
+# Preflight: Docker must be running. Done synchronously in the wrapper so
+# the failure surfaces via Raycast's HUD (osascript notifications need Script
+# Editor notification permission, which many setups don't grant). Socket is
+# created by Docker Desktop on start, removed on stop — instant check. The
+# underlying script re-runs `docker info` for defense-in-depth.
+if [[ ! -S /var/run/docker.sock ]]; then
+    echo "⚠️ Docker not running — start Docker.app"
+    exit 1
+fi
+
 nohup /Users/andersbekkevard/dev/misc/pdf_viewer/scripts/index-directory.sh "$1" \
     >>"$HOME/.cache/pdf_viewer/log" 2>&1 &
 disown
-echo "pdf_viewer: indexing folder…"
+echo "indexing folder…"
