@@ -47,6 +47,7 @@
 
     /* sizing */
     --sidebar-w:         280px;
+    --pdf2html-page-shift: 0px;
     --r-lg:              14px;
     --r-md:              10px;
     --r-sm:              7px;
@@ -174,30 +175,28 @@ body.pdf2html-search-entered ::-moz-selection { background: transparent; color: 
 .pf.pdf2html-force > .pc      { display: block !important; }
 
 
-/* ---- Sidebar visibility + overlay mode ----
+/* ---- Sidebar visibility + space-taking mode ----
    Hidden by default; body.sidebar-shown reveals it. BOTH rules needed —
    the negative beats pdf2htmlEX in the hidden state, the positive beats
    pdf2htmlEX's own `#sidebar { display: none }` in the shown state.
 
-   The sidebar OVERLAYS the PDF (design spec: PDF stays full width),
-   backed by #pdf2html-sidebar-backdrop — unlike pdf2htmlEX's default
-   push behavior. #page-container is pinned to left: 0 regardless. */
+   The PDF stays full-width at the container level; overlay.js computes a
+   page-frame translate that consumes the natural left gutter first and only
+   pushes the document right once the sidebar would otherwise crowd it. */
 
 body:not(.sidebar-shown) #sidebar        { display: none !important; }
 body.sidebar-shown       #sidebar        { display: flex !important; }
 #page-container                           { left: 0 !important; }
+.pf {
+    transform: translateX(var(--pdf2html-page-shift));
+    transition: transform 140ms ease-out;
+}
 
 #pdf2html-sidebar-backdrop {
-    position: fixed;
-    inset: 0;
-    /* Near-invisible dim — just enough for click-outside-to-close to feel
-       anchored; no perceptual "dimming the document" effect. */
-    background: rgba(0, 0, 0, 0.06);
-    z-index: 40;
-    display: none;
-    animation: pdf2html-fade-in 100ms ease-out both;
+    display: none !important;
+    pointer-events: none;
 }
-body.sidebar-shown #pdf2html-sidebar-backdrop { display: block; }
+body.sidebar-shown #pdf2html-sidebar-backdrop { display: none !important; }
 
 
 /* ---- Floating sidebar-toggle button (top-left) ---- */
@@ -233,7 +232,7 @@ body.sidebar-shown #pdf2html-toggle { display: none; }
 
 
 /* ============================================================================
-   Sidebar — pdf2htmlEX-provided #sidebar restyled as a fixed, overlay-mode
+   Sidebar — pdf2htmlEX-provided #sidebar restyled as a fixed, left-docked
    vertical stack:
      #pdf2html-sidebar-head     (doc title + author/pages; mountSidebarHeader)
      #pdf2html-sidebar-tabs     (Outline / Pages tab bar; mountSidebarChrome)
@@ -437,12 +436,37 @@ body.sidebar-shown #pdf2html-sidebar-body #outline {
     cursor: pointer;
     display: flex;
     flex-direction: column;
-    gap: 5px;
     font-family: var(--font-sans);
     font-size: 12px;
     color: var(--fg-dimmer);
     text-align: center;
     font-variant-numeric: tabular-nums;
+    transition: color 100ms ease-out;
+}
+.pdf2html-thumb .thumb-stack {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    position: relative;
+    isolation: isolate;
+}
+.pdf2html-thumb .thumb-stack::after {
+    content: '';
+    position: absolute;
+    inset: -6px -5px 0 -5px;
+    border-radius: 4px;
+    background: var(--accent-bg-strong);
+    box-shadow: 0 0 0 2px var(--accent-bg-strong);
+    opacity: 0;
+    pointer-events: none;
+    z-index: -1;
+    transition: opacity 100ms ease-out;
+}
+.pdf2html-thumb .thumb-label {
+    align-self: center;
+    min-width: 28px;
+    padding: 2px 8px;
+    border-radius: 999px;
     transition: color 100ms ease-out;
 }
 .pdf2html-thumb .thumb-page {
@@ -456,7 +480,7 @@ body.sidebar-shown #pdf2html-sidebar-body #outline {
     overflow: hidden;
     position: relative;
     box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.4);
-    transition: border-color 100ms ease-out;
+    transition: border-color 100ms ease-out, box-shadow 100ms ease-out;
 }
 .pdf2html-thumb .thumb-skeleton {
     position: absolute;
@@ -494,7 +518,14 @@ body.sidebar-shown #pdf2html-sidebar-body #outline {
 .pdf2html-thumb .thumb-page.has-img .thumb-skeleton { display: none; }
 .pdf2html-thumb:hover .thumb-page { border-color: var(--hairline-strong); }
 .pdf2html-thumb.active { color: var(--fg); }
-.pdf2html-thumb.active .thumb-page { border-color: var(--accent); }
+.pdf2html-thumb.active .thumb-label {
+    color: var(--fg);
+}
+.pdf2html-thumb.active .thumb-stack::after { opacity: 1; }
+.pdf2html-thumb.active .thumb-page {
+    border-color: var(--accent);
+    box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.4);
+}
 
 /* ---- Sidebar footer (Settings + Help icon buttons) ------------------------ */
 

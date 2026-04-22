@@ -12,6 +12,7 @@ For the rationale on the overall keyboard strategy, see
 | Key                    | Action                                                        |
 |------------------------|---------------------------------------------------------------|
 | `⌘.` · `⌘B`            | Toggle sidebar                                                |
+| `Tab`                  | When sidebar is open, toggle `j`/`k` scroll focus between the sidebar and the main PDF |
 | `/` · `s`              | Find in visible pages (Enter jump, `n` / `N` cycle)           |
 | `←` / `→` · `h` / `l`  | Switch sidebar tab (Outline / Pages) — only when sidebar open |
 | `A`                    | Toggle render-all pages                                       |

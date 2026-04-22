@@ -47,7 +47,7 @@ LOG_FILE="$CACHE_DIR/log"
 MAP_FILE="$CACHE_DIR/mappings.tsv"
 ASSET_LINK="$CACHE_DIR/_assets"
 IMAGE="pdf2htmlex/pdf2htmlex:0.18.8.rc2-master-20200820-ubuntu-20.04-x86_64"
-OVERLAY_VERSION=1
+OVERLAY_VERSION=19
 INJECTOR="$REPO_DIR/scripts/inject-overlay.py"
 
 mkdir -p "$CACHE_DIR"

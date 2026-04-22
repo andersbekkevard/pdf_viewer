@@ -33,6 +33,7 @@
         mountSidebarBackdrop();
         mountSidebarChrome();
         mountSidebarHeader();
+        mountSidebarLayout();
         mountThumbnails();
         mountSearch();
         applyAppearanceSettings();
@@ -113,16 +114,14 @@
 
 
     // ------------------------------------------------------------------------
-    // Sidebar backdrop — dims + blurs the PDF when the sidebar is shown.
-    // Always in DOM; visibility driven by body.sidebar-shown class. Clicking
-    // the backdrop closes the sidebar (Comet-style "tap outside to dismiss").
+    // Sidebar backdrop host. Kept in DOM as inert plumbing so older cache
+    // entries and CSS selectors still have a stable target, but the sidebar
+    // is no longer modal-overlay chrome — the main PDF stays clickable.
     // ------------------------------------------------------------------------
     function mountSidebarBackdrop() {
         var bd = document.createElement('div');
         bd.id = 'pdf2html-sidebar-backdrop';
-        bd.addEventListener('click', function () {
-            document.body.classList.remove('sidebar-shown');
-        });
+        bd.setAttribute('aria-hidden', 'true');
         document.body.appendChild(bd);
     }
 
@@ -212,6 +211,61 @@
         }
     }
 
+    // ------------------------------------------------------------------------
+    // Sidebar layout — keep the sidebar fixed on the left, but only translate
+    // the PDF pages once the sidebar has exhausted the natural left-side gutter
+    // around the centered page. That mirrors native browser side panels more
+    // closely than re-centering the whole document inside a narrowed viewport.
+    // ------------------------------------------------------------------------
+    function mountSidebarLayout() {
+        var sidebar = document.getElementById('sidebar');
+        var pc = document.getElementById('page-container');
+        if (!sidebar || !pc) return;
+        var pages = Array.prototype.slice.call(pc.querySelectorAll('.pf'));
+        var widestPage = pages[0] || null;
+        for (var i = 1; i < pages.length; i++) {
+            if (!widestPage || pages[i].offsetWidth > widestPage.offsetWidth) widestPage = pages[i];
+        }
+
+        var raf = null;
+        var settleFrames = 0;
+
+        function apply() {
+            var shift = 0;
+            if (document.body.classList.contains('sidebar-shown')) {
+                var maxWidth = widestPage ? widestPage.getBoundingClientRect().width : 0;
+                var viewportWidth = pc.getBoundingClientRect().width;
+                var naturalLeft = (viewportWidth - maxWidth) / 2;
+                var sidebarRect = sidebar.getBoundingClientRect();
+                var gutter = 14;
+                shift = Math.max(0, Math.round(sidebarRect.right + gutter - naturalLeft));
+            }
+            document.documentElement.style.setProperty('--pdf2html-page-shift', shift + 'px');
+        }
+
+        function step() {
+            raf = null;
+            apply();
+            if (settleFrames > 0) {
+                settleFrames -= 1;
+                raf = requestAnimationFrame(step);
+            }
+        }
+
+        function sched(extraFrames) {
+            if (extraFrames == null) extraFrames = 4;
+            settleFrames = Math.max(settleFrames, extraFrames);
+            if (raf) return;
+            raf = requestAnimationFrame(step);
+        }
+
+        new MutationObserver(function () { sched(6); }).observe(document.body, {
+            attributes: true,
+            attributeFilter: ['class'],
+        });
+        requestAnimationFrame(function () { sched(6); });
+    }
+
 
     // ------------------------------------------------------------------------
     // Thumbnails grid — a 2-col grid of placeholder page cards. pdf2htmlEX
@@ -268,28 +322,49 @@
                 title: 'Page ' + pageNum,
                 dataset: { page: String(pageNum) },
                 onClick: function () { pf.scrollIntoView({ block: 'start' }); },
-            }, [inner, el('div', { class: 'thumb-label' }, String(pageNum))]);
+            }, [
+                el('div', { class: 'thumb-stack' }, [
+                    inner,
+                    el('div', { class: 'thumb-label' }, String(pageNum)),
+                ]),
+            ]);
             host.appendChild(card);
         })(pages[i], i);
 
-        document.addEventListener('pdf2html-page-change', function (e) {
-            var page = e.detail && e.detail.page;
+        function thumbsTabVisible() {
+            return document.body.classList.contains('sidebar-shown')
+                && document.body.getAttribute('data-sidebar-tab') === 'thumbs';
+        }
+
+        function syncThumbState(page, center) {
+            if (!page || page < 1) return;
             var thumbs = host.querySelectorAll('.pdf2html-thumb');
             var active = null;
             for (var j = 0; j < thumbs.length; j++) {
                 var on = parseInt(thumbs[j].dataset.page, 10) === page;
                 thumbs[j].classList.toggle('active', on);
+                if (on) thumbs[j].setAttribute('aria-current', 'page');
+                else thumbs[j].removeAttribute('aria-current');
                 if (on) active = thumbs[j];
             }
-            // Only auto-scroll the thumb into view when the sidebar is open
-            // AND the thumbs tab is active, so we don't steal scroll position
-            // while the user is reading.
-            if (active
-                && document.body.classList.contains('sidebar-shown')
-                && document.body.getAttribute('data-sidebar-tab') === 'thumbs') {
-                try { active.scrollIntoView({ block: 'nearest' }); } catch (err) {}
+            if (active && center && thumbsTabVisible()) {
+                try { active.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'auto' }); } catch (err) {}
             }
+        }
+
+        document.addEventListener('pdf2html-page-change', function (e) {
+            var page = e.detail && e.detail.page;
+            syncThumbState(page, true);
         });
+
+        new MutationObserver(function () {
+            if (thumbsTabVisible()) syncThumbState(currentPage, true);
+        }).observe(document.body, {
+            attributes: true,
+            attributeFilter: ['class', 'data-sidebar-tab'],
+        });
+
+        syncThumbState(currentPage, false);
     }
 
 
@@ -606,6 +681,16 @@
                 document.body.classList.toggle('sidebar-shown');
                 return;
             }
+            if (e.key === 'Tab'
+                && !e.metaKey && !e.ctrlKey && !e.altKey
+                && document.body.classList.contains('sidebar-shown')
+                && !document.getElementById('pdf2html-palette')
+                && !document.getElementById('pdf2html-settings')
+                && !document.getElementById('pdf2html-cheatsheet')) {
+                e.preventDefault();
+                if (window.__pdf2htmlToggleScrollFocus) window.__pdf2htmlToggleScrollFocus();
+                return;
+            }
             // ←/→ (and h/l) switch tabs when the sidebar is open. Guarded on
             // sidebar-shown so arrows keep their default (scroll) behavior when
             // it's closed; h/l are guarded the same way so Vimium's own
@@ -653,9 +738,14 @@
     // ------------------------------------------------------------------------
     function registerFocusRouting() {
         var prevActivation = { settings: null, cheatsheet: null };
+        var body = document.body;
 
-        function activate(el) {
+        function setScrollFocus(kind) {
+            body.setAttribute('data-scroll-focus', kind);
+        }
+        function activate(el, kind) {
             if (!el) return;
+            if (kind) setScrollFocus(kind);
             try { el.focus({ preventScroll: true }); } catch (e) { try { el.focus(); } catch (e2) {} }
             try { el.dispatchEvent(new Event('DOMActivate', { bubbles: true, cancelable: true })); } catch (e) {}
             try { el.dispatchEvent(new MouseEvent('click',   { bubbles: true, cancelable: true })); } catch (e) {}
@@ -670,6 +760,7 @@
         // the text layer (the blue glow the user saw is our ::selection color
         // on a tiny range that the click materializes).
         function activateMain() {
+            setScrollFocus('main');
             var el = document.getElementById('page-container') || document.body;
             try { el.dispatchEvent(new Event('DOMActivate', { bubbles: true, cancelable: true })); } catch (e) {}
             try { el.dispatchEvent(new MouseEvent('click',   { bubbles: true, cancelable: true })); } catch (e) {}
@@ -678,26 +769,50 @@
                 if (sel && sel.rangeCount > 0) sel.removeAllRanges();
             } catch (e) {}
         }
+        function activateSidebar() {
+            activate(document.getElementById('pdf2html-sidebar-body'), 'sidebar');
+        }
         function restore(kind) {
             var target = prevActivation[kind];
             prevActivation[kind] = null;
-            if (target && document.contains(target)) activate(target);
+            if (target && document.contains(target)) {
+                var role = target.id === 'pdf2html-sidebar-body' ? 'sidebar'
+                    : (target.id === 'page-container' ? 'main' : null);
+                activate(target, role);
+            }
             else activateMain();
         }
 
+        window.__pdf2htmlFocusMain = activateMain;
+        window.__pdf2htmlFocusSidebar = activateSidebar;
+        window.__pdf2htmlToggleScrollFocus = function () {
+            if (!body.classList.contains('sidebar-shown')) return;
+            if (body.getAttribute('data-scroll-focus') === 'sidebar') activateMain();
+            else activateSidebar();
+        };
+
+        var pc = document.getElementById('page-container');
+        if (pc) pc.addEventListener('mousedown', function () {
+            if (body.classList.contains('sidebar-shown')) activateMain();
+        });
+        var sidebarBody = document.getElementById('pdf2html-sidebar-body');
+        if (sidebarBody) sidebarBody.addEventListener('mousedown', function () {
+            if (body.classList.contains('sidebar-shown')) activateSidebar();
+        });
+
         // Sidebar: body.sidebar-shown is the canonical "visible" signal.
-        var wasShown = document.body.classList.contains('sidebar-shown');
+        var wasShown = body.classList.contains('sidebar-shown');
         new MutationObserver(function () {
-            var isShown = document.body.classList.contains('sidebar-shown');
+            var isShown = body.classList.contains('sidebar-shown');
             if (isShown === wasShown) return;
             wasShown = isShown;
             if (isShown) {
-                activate(document.getElementById('pdf2html-sidebar-body'));
+                activateSidebar();
             } else {
                 // Hand j/k back to the PDF scroller.
                 activateMain();
             }
-        }).observe(document.body, { attributes: true, attributeFilter: ['class'] });
+        }).observe(body, { attributes: true, attributeFilter: ['class'] });
 
         // Modals: react to addition/removal of the backdrop nodes.
         new MutationObserver(function (mutations) {
@@ -720,7 +835,9 @@
                     else if (r.id === 'pdf2html-cheatsheet') restore('cheatsheet');
                 }
             });
-        }).observe(document.body, { childList: true });
+        }).observe(body, { childList: true });
+
+        setScrollFocus(body.classList.contains('sidebar-shown') ? 'sidebar' : 'main');
     }
 
 
@@ -802,10 +919,11 @@
                     + '<span class="pdf2html-kbd sm">Esc</span> to close'
                 + '</span>'
             + '</div>'
-            + '<div class="pdf2html-cheatsheet-body" tabindex="-1">'
+                + '<div class="pdf2html-cheatsheet-body" tabindex="-1">'
                 + '<div class="pdf2html-cheatsheet-section">'
                     + '<h3>Viewer</h3>'
                     + kRow([['⌘','.'], ['⌘','B']], 'Toggle sidebar')
+                    + kRow([['Tab']], 'Sidebar open: toggle j/k focus between sidebar and main PDF')
                     + kRow([['←','h'], ['→','l']], 'Sidebar: Outline / Pages tab (when open)')
                     + kRow([['A']], 'Toggle render-all pages')
                     + kRow([['e'], ['q'], ['E']], 'Next / prev page; active text selection extends pagewise instead')
@@ -2159,12 +2277,15 @@
 
     // ------------------------------------------------------------------------
     // Page counter — small "N / total" pill at top-center, updates on scroll.
-    // Uses elementFromPoint so it's zoom-robust (no cached offsets).
+    // Tracks the current page by live viewport overlap against the currently
+    // intersecting .pf frames, so it stays correct even when the page itself
+    // doesn't happen to cover the viewport's exact center point.
     // ------------------------------------------------------------------------
     function mountPageCounter() {
         var container = document.getElementById('page-container');
         if (!container) return;
-        var total = container.querySelectorAll('.pf').length;
+        var pages = Array.prototype.slice.call(container.querySelectorAll('.pf'));
+        var total = pages.length;
         if (!total) return;
 
         var el = document.createElement('div');
@@ -2261,41 +2382,69 @@
         }
 
         var lastPageNum = -1;
+        var visible = new Set();
+
+        function pageNumFor(pf, fallback) {
+            var m = (pf && pf.id || '').match(/pf([0-9a-f]+)/i);
+            return m ? parseInt(m[1], 16) : fallback;
+        }
+
+        function bestVisiblePage() {
+            var box = container.getBoundingClientRect();
+            var candidates = visible.size ? Array.from(visible) : pages;
+            var best = null;
+            var bestOverlap = -1;
+            for (var i = 0; i < candidates.length; i++) {
+                var pf = candidates[i];
+                var rect = pf.getBoundingClientRect();
+                var overlap = Math.min(rect.bottom, box.bottom) - Math.max(rect.top, box.top);
+                if (overlap > bestOverlap) {
+                    bestOverlap = overlap;
+                    best = pf;
+                }
+            }
+            if (!best || bestOverlap <= 0) return null;
+            return pageNumFor(best, 1);
+        }
+
         function update() {
             // Always run — consumers like the thumbnails grid listen for
             // pdf2html-page-change regardless of whether the pageno pill
             // itself is visible. Text-content update is still guarded
             // behind the visibility class.
-            var r = container.getBoundingClientRect();
-            var hit = document.elementFromPoint(
-                r.left + container.clientWidth / 2,
-                r.top + container.clientHeight / 2
-            );
-            while (hit && hit !== document.body) {
-                if (hit.classList && hit.classList.contains('pf')) {
-                    var m = (hit.id || '').match(/pf([0-9a-f]+)/i);
-                    if (m) {
-                        var n = parseInt(m[1], 16);
-                        if (n !== lastPageNum) {
-                            lastPageNum = n;
-                            if (!document.body.classList.contains('pageno-hidden')) {
-                                if (cur.textContent !== String(n)) cur.textContent = String(n);
-                            }
-                            updateChapter();
-                            document.dispatchEvent(new CustomEvent(
-                                'pdf2html-page-change', { detail: { page: n } }));
-                        }
-                    }
-                    return;
+            var n = bestVisiblePage();
+            if (!n) return;
+            if (n !== lastPageNum) {
+                lastPageNum = n;
+                if (!document.body.classList.contains('pageno-hidden')) {
+                    if (cur.textContent !== String(n)) cur.textContent = String(n);
                 }
-                hit = hit.parentElement;
+                updateChapter();
+                document.dispatchEvent(new CustomEvent(
+                    'pdf2html-page-change', { detail: { page: n } }));
             }
         }
 
+        var observer = new IntersectionObserver(function (entries) {
+            for (var i = 0; i < entries.length; i++) {
+                if (entries[i].isIntersecting) visible.add(entries[i].target);
+                else visible.delete(entries[i].target);
+            }
+            sched();
+        }, {
+            root: container,
+            rootMargin: '-20px 0px',
+            threshold: 0,
+        });
+        pages.forEach(function (p) { observer.observe(p); });
+
         var raf = null;
-        container.addEventListener('scroll', function () {
+        function sched() {
             if (raf) return;
             raf = requestAnimationFrame(function () { raf = null; update(); });
+        }
+        container.addEventListener('scroll', function () {
+            sched();
         }, { passive: true });
         setTimeout(update, 80);
 
