@@ -579,12 +579,12 @@
 
 
     // ------------------------------------------------------------------------
-    // Floating ☰ button top-left — click or `s` / ⌘. toggles sidebar.
+    // Floating ☰ button top-left — click or ⌘. / ⌘B toggles sidebar.
     // ------------------------------------------------------------------------
     function mountSidebarToggleButton() {
         var b = document.createElement('button');
         b.id = 'pdf2html-toggle';
-        b.title = 'Toggle sidebar (⌘. or s)';
+        b.title = 'Toggle sidebar (⌘. or ⌘B)';
         // Same SVG as the in-sidebar close button — one visual language
         // for "the sidebar affordance" whether it's open or closed.
         b.innerHTML = svgIcon(ICONS.sidebar, 16);
@@ -598,12 +598,8 @@
             // `!e.shiftKey` matters: ⌘⇧. is the page-counter toggle and on
             // some layouts (e.g. Norwegian) e.key still reads '.' with
             // shift held, so without this guard both handlers fire.
-            if (e.metaKey && !e.shiftKey && e.key === '.') {
+            if (e.metaKey && !e.shiftKey && (e.key === '.' || e.key === 'b' || e.key === 'B')) {
                 e.preventDefault();
-                document.body.classList.toggle('sidebar-shown');
-                return;
-            }
-            if (e.key === 's' && !e.metaKey && !e.ctrlKey && !e.altKey) {
                 document.body.classList.toggle('sidebar-shown');
                 return;
             }
@@ -806,14 +802,14 @@
             + '<div class="pdf2html-cheatsheet-body" tabindex="-1">'
                 + '<div class="pdf2html-cheatsheet-section">'
                     + '<h3>Viewer</h3>'
-                    + kRow([['s'], ['⌘','.']], 'Toggle sidebar')
+                    + kRow([['⌘','.'], ['⌘','B']], 'Toggle sidebar')
                     + kRow([['←','h'], ['→','l']], 'Sidebar: Outline / Pages tab (when open)')
                     + kRow([['A']], 'Toggle render-all pages')
                     + kRow([['⌘','⇧','.']], 'Toggle page counter')
                     + '<h3>Modes</h3>'
                     + kRow([[':']], 'Command palette (Tab / ^J / ^K to cycle)')
                     + kRow([['⌘','K']], 'Quick-open another cached doc')
-                    + kRow([['/']], 'Find in visible pages (Enter to jump, n/N to cycle)')
+                    + kRow([['/'], ['s']], 'Find in visible pages (Enter to jump, n/N to cycle)')
                     + kRow([['?']], 'Toggle this cheatsheet')
                     + kRow([['Esc']], 'Close overlay / clear selection')
                     + '<h3>Vimium (external)</h3>'
@@ -2102,7 +2098,7 @@
             el('div', { class: 'doc-text' }, [titleEl, metaEl]),
             el('button', {
                 class: 'pdf2html-sidebar-close',
-                title: 'Close sidebar (s)',
+                title: 'Close sidebar (⌘. or ⌘B)',
                 onClick: function () {
                     document.body.classList.remove('sidebar-shown');
                 },
@@ -2198,9 +2194,10 @@
                 return;
             }
 
-            // --- Bar closed, no persistent hits: `/` opens a new search --
+            // --- Bar closed, no persistent hits: `/` or `s` opens search --
             if (!searchState.entered) {
-                if (e.key !== '/') return;
+                var opener = e.key === '/' || (e.key === 's' && !e.metaKey && !e.ctrlKey && !e.altKey);
+                if (!opener) return;
                 if (isInputTarget(e.target)) return;
                 e.preventDefault();
                 e.stopImmediatePropagation();
@@ -2226,8 +2223,8 @@
                 focusActiveHit();
                 return;
             }
-            // `/` reopens for a fresh query — drops the existing state.
-            if (e.key === '/') {
+            // `/` or `s` reopens for a fresh query — drops the existing state.
+            if (e.key === '/' || (e.key === 's' && !e.metaKey && !e.ctrlKey && !e.altKey)) {
                 e.preventDefault();
                 e.stopImmediatePropagation();
                 closeSearch();

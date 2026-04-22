@@ -11,7 +11,8 @@ For the rationale on the overall keyboard strategy, see
 
 | Key                    | Action                                                        |
 |------------------------|---------------------------------------------------------------|
-| `s` · `⌘.`             | Toggle sidebar                                                |
+| `⌘.` · `⌘B`            | Toggle sidebar                                                |
+| `/` · `s`              | Find in visible pages (Enter jump, `n` / `N` cycle)           |
 | `←` / `→` · `h` / `l`  | Switch sidebar tab (Outline / Pages) — only when sidebar open |
 | `A`                    | Toggle render-all pages                                       |
 | `⌘⇧.`                  | Toggle page counter                                           |
@@ -71,6 +72,6 @@ That's the escape hatch.
 
 ## Vimium setup
 
-Add `localhost:7435` to Vimium's "Keys to pass through" with the key
-`?`. Without this, Vimium swallows `?` before the cheatsheet handler
-sees it. One-time setup in the Vimium options page.
+Add `localhost:7435` to Vimium's "Keys to pass through" with the keys
+`? s / n N h l`. Without this, Vimium swallows them before the overlay's
+handlers see them. One-time setup in the Vimium options page.

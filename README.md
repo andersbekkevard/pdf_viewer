@@ -106,10 +106,13 @@ What's not built: cross-device access over Tailscale (phase 8, optional).
 pdf_viewer/
 ├── assets/overlay.{js,css}      # the overlay — all UX behavior
 ├── scripts/
-│   ├── pdf2html-convert.sh      # Raycast convert: single PDF (file or url)
-│   ├── index-directory.sh       # Raycast index: recursive directory walk
+│   ├── pdf2html-convert.sh      # convert: single PDF (file or url)
+│   ├── index-directory.sh       # index: recursive directory walk
 │   ├── upgrade-cache.sh         # bulk re-inject / re-convert
 │   └── inject-overlay.py        # idempotent overlay injector
+├── raycast/                     # Raycast-format wrappers (point Raycast here)
+│   ├── pdf-viewer-convert.sh
+│   └── pdf-viewer-index-directory.sh
 ├── daemon/                      # FastAPI read-only service (uv project)
 │   ├── main.py
 │   └── visits.py
@@ -131,16 +134,20 @@ pdf_viewer/
 Everything the repo **does not** contain but depends on. All of it is
 wired once and then forgotten.
 
-### 1. Raycast wrappers (`~/dev/misc/raycast_scripts/other/`)
+### 1. Raycast wrappers (`raycast/`)
 
-Raycast only indexes files under its configured script directories, so
-the user-facing entrypoints live there — not in this repo. They are
-deliberately **trivial**: a `nohup` fork into the real script, then
-`echo` a HUD line and exit. All logic lives in `pdf_viewer/scripts/`
-so it can be edited and tested without Raycast in the loop.
+The user-facing entrypoints live **inside** this repo at `raycast/`.
+The folder contains *only* Raycast-format scripts so it can be added
+directly as a script directory (Raycast → Settings → Extensions →
+Script Commands → *Add script directory* → pick `pdf_viewer/raycast/`)
+without Raycast tripping over unrelated files.
+
+They are deliberately **trivial**: a `nohup` fork into the real script,
+then `echo` a HUD line and exit. All logic lives in `scripts/` so it
+can be edited and tested without Raycast in the loop.
 
 ```bash
-# ~/dev/misc/raycast_scripts/other/pdf-viewer-convert.sh
+# raycast/pdf-viewer-convert.sh
 nohup /…/pdf_viewer/scripts/pdf2html-convert.sh "$@" \
     >>"$HOME/.cache/pdf_viewer/log" 2>&1 &
 disown
@@ -148,7 +155,7 @@ echo "pdf_viewer: starting conversion…"
 ```
 
 ```bash
-# ~/dev/misc/raycast_scripts/other/pdf-viewer-index-directory.sh
+# raycast/pdf-viewer-index-directory.sh
 export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
 nohup /…/pdf_viewer/scripts/index-directory.sh "$1" \
     >>"$HOME/.cache/pdf_viewer/log" 2>&1 &
@@ -191,9 +198,9 @@ next open re-converts.
 
 ### 5. Vimium exclusion rule
 
-Add `localhost:7435` to Vimium's "Keys to pass through" with the key
-`?`, otherwise Vimium swallows it before the overlay's cheatsheet
-handler sees it. One-time setup in the Vimium options page.
+Add `localhost:7435` to Vimium's "Keys to pass through" with the keys
+`? s / n N h l`, otherwise Vimium swallows them before the overlay's
+handlers see them. One-time setup in the Vimium options page.
 
 ### 6. Docker Desktop
 
@@ -212,7 +219,8 @@ the migration window.
 
 | Key      | Action                                       |
 |----------|----------------------------------------------|
-| `s` / `⌘.` | Toggle sidebar                             |
+| `⌘.` / `⌘B` | Toggle sidebar                            |
+| `/` / `s` | Find in visible pages                       |
 | `A`      | Toggle render-all pages                      |
 | `⌘⇧.`    | Toggle page counter                          |
 | `:`      | Open command palette                         |
