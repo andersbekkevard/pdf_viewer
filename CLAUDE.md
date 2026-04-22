@@ -43,11 +43,12 @@ Runtime cache: `~/.cache/pdf_viewer/` (see `docs/cache.md`). A
 **symlink** from `~/.cache/pdf_viewer/_assets/` back to this repo's
 `assets/` is what makes overlay edits go live immediately.
 
-The Raycast entrypoints live **outside** this repo at
-`~/dev/misc/raycast_scripts/other/pdf-viewer-*.sh` because Raycast only
-indexes files under its own scripts dir. Those entrypoints are
-deliberately trivial `nohup` forks into `scripts/*.sh` — all logic
-stays here.
+The Raycast entrypoints live in `raycast/pdf-viewer-*.sh`. Raycast is
+configured (Settings → Extensions → Script Commands → *Add script
+directory*) to index this folder directly — it contains **only**
+Raycast-format scripts so Raycast doesn't try to parse unrelated files.
+Those entrypoints are deliberately trivial `nohup` forks into
+`scripts/*.sh` — all real logic stays in `scripts/`.
 
 ## Common tasks
 

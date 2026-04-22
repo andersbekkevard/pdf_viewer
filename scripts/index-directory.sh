@@ -10,7 +10,7 @@
 # Idempotent — second run on the same folder is a no-op.
 #
 # Invoked via Raycast wrapper at
-#   raycast_scripts/other/pdf-viewer-index-directory.sh
+#   raycast/pdf-viewer-index-folder.sh
 # which also takes the folder path as a Raycast argument.
 #
 # Requires Docker running (see ADR 0004). Fails fast otherwise.
@@ -18,8 +18,16 @@
 
 set -u
 
+# Defined early so validation failures below can surface via macOS
+# notification. Raycast silent mode doesn't display stderr, and without
+# this the script dies invisibly when given a bad path.
+notify() {
+    osascript -e "display notification \"$1\" with title \"pdf_viewer\"" >/dev/null 2>&1
+}
+
 DIR_ARG="${1:-}"
 if [[ -z "$DIR_ARG" ]]; then
+    notify "No folder argument given"
     echo "usage: $(basename "$0") <folder>" >&2
     exit 2
 fi
@@ -27,6 +35,7 @@ fi
 # Expand leading ~ — Raycast passes the literal string, no shell expansion
 DIR="${DIR_ARG/#\~/$HOME}"
 if [[ ! -d "$DIR" ]]; then
+    notify "Folder not found: $DIR_ARG"
     echo "not a directory: $DIR" >&2
     exit 1
 fi
@@ -46,10 +55,6 @@ mkdir -p "$CACHE_DIR"
 log() { printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >> "$LOG_FILE"; }
 say() { printf '%s\n' "$*"; log "$*"; }
 die() { printf 'error: %s\n' "$*" >&2; log "FAIL: $*"; exit 1; }
-
-notify() {
-    osascript -e "display notification \"$1\" with title \"pdf_viewer\"" >/dev/null 2>&1
-}
 
 # Asset symlink (same guarantee pdf2html-convert.sh makes)
 if [[ ! -L "$ASSET_LINK" ]]; then

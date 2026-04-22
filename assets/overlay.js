@@ -19,6 +19,7 @@
         registerQuickOpenHandler();
         registerPagenoToggleHandler();
         registerRenderAllHandler();
+        registerPageJumpHandler();
         registerSidebarKeyHandler();
         registerFocusRouting();
         registerPageTracker();
@@ -805,6 +806,8 @@
                     + kRow([['⌘','.'], ['⌘','B']], 'Toggle sidebar')
                     + kRow([['←','h'], ['→','l']], 'Sidebar: Outline / Pages tab (when open)')
                     + kRow([['A']], 'Toggle render-all pages')
+                    + kRow([['e'], ['E']], 'Next / prev page (N prefix: 10e jumps 10)')
+                    + kRow([['c'], ['C']], 'Next / prev chapter (N prefix: 3c jumps 3)')
                     + kRow([['⌘','⇧','.']], 'Toggle page counter')
                     + '<h3>Modes</h3>'
                     + kRow([[':']], 'Command palette (Tab / ^J / ^K to cycle)')
@@ -995,24 +998,34 @@
         });
     }
 
-    function gotoNextChapter() {
+    // Step by N chapters from the current reading position. Positive delta =
+    // forward, negative = backward. `delta === -1` keeps a threshold
+    // forgiveness: if we're >= NEAR_THRESHOLD pages into the current section,
+    // backtrack to its start rather than the previous section. Multi-step
+    // backward jumps (|delta| >= 2) skip that rule — a user asking for "-3"
+    // wants three section boundaries, not two. Uses snapToPage for flush
+    // alignment, matching the e/E page-step feel. Also the backing function
+    // for the `:next` / `:prev` palette commands.
+    function gotoChapterBy(delta) {
         var chaps = sortedChapterPages();
-        for (var i = 0; i < chaps.length; i++) {
-            if (chaps[i].page > currentPage) { gotoPage(chaps[i].page); return; }
-        }
-    }
-
-    function gotoPrevChapter() {
-        var chaps = sortedChapterPages();
-        if (!chaps.length) return;
+        if (!chaps.length || !delta) return;
         var idx = -1;
         for (var i = 0; i < chaps.length; i++) {
             if (chaps[i].page <= currentPage) idx = i; else break;
         }
-        if (idx === -1) return;
-        var offset = currentPage - chaps[idx].page;
-        if (offset >= CHAPTER_NEAR_THRESHOLD) gotoPage(chaps[idx].page);
-        else if (idx > 0) gotoPage(chaps[idx - 1].page);
+        var target;
+        if (delta > 0) {
+            target = (idx === -1 ? 0 : idx + delta);
+        } else if (delta === -1) {
+            if (idx === -1) return;
+            var offset = currentPage - chaps[idx].page;
+            target = (offset >= CHAPTER_NEAR_THRESHOLD) ? idx : idx - 1;
+        } else {
+            if (idx === -1) return;
+            target = idx + delta;
+        }
+        target = Math.min(chaps.length - 1, Math.max(0, target));
+        snapToPage(chaps[target].page);
     }
 
     // Pull current outline entries. Re-read on each palette open so that
@@ -1172,10 +1185,10 @@
         // Same logic puts `prev` after `pin` so `:p<Enter>` lands on prev.
         { name: 'next',    aliases: [],       desc: 'next chapter',
           argCompleter: null,
-          handler: function () { gotoNextChapter(); } },
+          handler: function () { gotoChapterBy(1); } },
         { name: 'prev',    aliases: [],       desc: 'prev chapter (or chapter start)',
           argCompleter: null,
-          handler: function () { gotoPrevChapter(); } },
+          handler: function () { gotoChapterBy(-1); } },
         { name: 'zoom',    aliases: [],       desc: 'set zoom N',
           argCompleter: function (tail) { return prefixFilter(['1.0', '1.2', '1.4', '1.6', '1.8', '2.0', '2.5'], tail); },
           handler: function (a) { if (a !== undefined && window.__pdf2htmlSetZoom) window.__pdf2htmlSetZoom(parseFloat(a)); } },
@@ -1440,6 +1453,18 @@
         if (el) el.scrollIntoView({ block: 'start' });
     }
 
+    // Like gotoPage, but bypasses #page-container's scroll-padding so the
+    // target page's top aligns flush with the viewport top. An 8 px lead-in
+    // keeps a sliver of inter-page gap visible (no prev-page content, but a
+    // clear "this is the top of a page" cue). Used by e/E page stepping.
+    function snapToPage(n) {
+        if (!n || n < 1) return;
+        var el = document.getElementById('pf' + n.toString(16));
+        var pc = document.getElementById('page-container');
+        if (!el || !pc) return;
+        pc.scrollTop = Math.max(0, el.offsetTop - 8);
+    }
+
     // Match by exact (case-insensitive) label first, then substring. Falls back
     // silently if there's no match — palette already showed candidates, so an
     // empty submit is user saying "never mind."
@@ -1616,6 +1641,50 @@
             cb.checked = !cb.checked;
             cb.dispatchEvent(new Event('change'));
         });
+    }
+
+
+    // ------------------------------------------------------------------------
+    // Count-prefix motion handler — the overlay's only count-prefix binding.
+    //   e / E : ±1 page (10e = +10 pages, 10E = -10 pages)
+    //   c / C : ±1 chapter (10c = +10 chapters, 10C = -10 chapters)
+    // Bare keys = ±1. Digits buffer until a motion fires, 1.5 s elapses, or
+    // any other key cancels. Requires Vimium passthrough for `e E c C 0-9`
+    // on localhost:7435, else Vimium swallows the digits or letters.
+    // ------------------------------------------------------------------------
+    function registerPageJumpHandler() {
+        var buf = '';
+        var timer = null;
+        function clearBuf() {
+            buf = '';
+            if (timer) { clearTimeout(timer); timer = null; }
+        }
+        document.addEventListener('keydown', function (e) {
+            if (isInputTarget(e.target)) { clearBuf(); return; }
+            if (e.metaKey || e.ctrlKey || e.altKey) { clearBuf(); return; }
+            if (e.key >= '0' && e.key <= '9') {
+                buf = (buf + e.key).slice(-6);
+                e.preventDefault(); e.stopPropagation();
+                if (timer) clearTimeout(timer);
+                timer = setTimeout(clearBuf, 1500);
+                return;
+            }
+            var k = e.key;
+            if (k !== 'e' && k !== 'E' && k !== 'c' && k !== 'C') {
+                clearBuf();
+                return;
+            }
+            var count = parseInt(buf, 10) || 1;
+            clearBuf();
+            e.preventDefault(); e.stopPropagation();
+            if (k === 'e' || k === 'E') {
+                var total = document.querySelectorAll('.pf').length || 1;
+                var delta = k === 'e' ? count : -count;
+                snapToPage(Math.min(total, Math.max(1, currentPage + delta)));
+            } else {
+                gotoChapterBy(k === 'c' ? count : -count);
+            }
+        }, true);
     }
 
 

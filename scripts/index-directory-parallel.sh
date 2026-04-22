@@ -23,20 +23,28 @@
 
 set -u
 
+# Defined early so validation failures below can surface via macOS
+# notification. Raycast silent mode doesn't display stderr, and without
+# this the script dies invisibly when given a bad path.
+notify() { osascript -e "display notification \"$1\" with title \"pdf_viewer\"" >/dev/null 2>&1; }
+
 DIR_ARG="${1:-}"
 JOBS="${2:-4}"
 
 if [[ -z "$DIR_ARG" ]]; then
+    notify "No folder argument given"
     echo "usage: $(basename "$0") <folder> [jobs]" >&2
     exit 2
 fi
 if ! [[ "$JOBS" =~ ^[0-9]+$ ]] || [[ "$JOBS" -lt 1 ]]; then
+    notify "Invalid jobs value: $JOBS"
     echo "jobs must be a positive integer (got '$JOBS')" >&2
     exit 2
 fi
 
 DIR="${DIR_ARG/#\~/$HOME}"
 if [[ ! -d "$DIR" ]]; then
+    notify "Folder not found: $DIR_ARG"
     echo "not a directory: $DIR" >&2
     exit 1
 fi
@@ -59,7 +67,6 @@ mkdir -p "$CACHE_DIR"
 log() { printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >> "$LOG_FILE"; }
 say() { printf '%s\n' "$*"; log "$*"; }
 die() { printf 'error: %s\n' "$*" >&2; log "FAIL: $*"; exit 1; }
-notify() { osascript -e "display notification \"$1\" with title \"pdf_viewer\"" >/dev/null 2>&1; }
 
 export -f log
 

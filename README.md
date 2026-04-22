@@ -112,7 +112,7 @@ pdf_viewer/
 │   └── inject-overlay.py        # idempotent overlay injector
 ├── raycast/                     # Raycast-format wrappers (point Raycast here)
 │   ├── pdf-viewer-convert.sh
-│   └── pdf-viewer-index-directory.sh
+│   └── pdf-viewer-index-folder.sh
 ├── daemon/                      # FastAPI read-only service (uv project)
 │   ├── main.py
 │   └── visits.py
@@ -155,7 +155,7 @@ echo "pdf_viewer: starting conversion…"
 ```
 
 ```bash
-# raycast/pdf-viewer-index-directory.sh
+# raycast/pdf-viewer-index-folder.sh
 export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
 nohup /…/pdf_viewer/scripts/index-directory.sh "$1" \
     >>"$HOME/.cache/pdf_viewer/log" 2>&1 &

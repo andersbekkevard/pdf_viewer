@@ -122,8 +122,13 @@ bubble phase and trust the target/input guard.
 
 - **Minor Vimium config required.** `?` exclusion for `localhost:7435`
   is a one-time setting. Documented in plan.md §8 "Known gotchas".
-- **No count-prefix vim-style jumps.** `97go` doesn't exist; users type
-  `:97<CR>` instead. Small ergonomic cost, large implementation saving.
+- **Count-prefix vim-style jumps are limited to relative motions.**
+  `e` / `E` (page step) and `c` / `C` (chapter step) accept an optional
+  digit prefix (`10e` = +10 pages, `3c` = +3 chapters), added after the
+  rest of the keyboard surface stabilised. Absolute jumps still go
+  through the palette (`:97<CR>`, `:chapter <name>`) — we did not grow
+  a general `[N]<key>` parser. Scope kept narrow on purpose: four
+  motions sharing one 1.5 s digit buffer, no chord state machine.
 - **Sidebar toggle duplicated (`s` AND `⌘.`).** Both exist because `s`
   is fast but `⌘.` is mouse-kb-swap-proof. Trivial duplication.
 
