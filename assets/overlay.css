@@ -1,80 +1,300 @@
 /* ============================================================================
-   pdf_viewer overlay — restyling applied on top of pdf2htmlEX's default output.
-   Served as a static asset; each converted HTML links this file via <link>.
+   pdf_viewer overlay — chrome restyle on top of pdf2htmlEX's default output.
+   Served as /_assets/overlay.css from the daemon; each converted HTML links
+   it via <link rel="stylesheet">.
+
+   Design system: warm dark (#282828 body / #ece7dc fg), single font family
+   (FK Grotesk Neue), monochromatic accents (no color pop — lighter grey is
+   the only highlight). One source of truth for tokens is the :root block.
    ============================================================================ */
 
+@import url('/_assets/fonts/fk.css');
 
-/* ---- Canvas background + text selection ---- */
+:root {
+    /* chrome */
+    --bg:                #282828;
+    --bg-elevated:       #1e1e1e;      /* sidebar, popovers, palette */
+    --bg-elevated-2:     #3a3a3a;      /* kbd chips, hover raise */
+    --bg-input:          #151515;
+    --bg-hover:          rgba(255, 255, 255, 0.04);
+    --bg-active:         rgba(255, 255, 255, 0.06);
+
+    /* borders */
+    --hairline:          rgba(255, 255, 255, 0.06);
+    --hairline-strong:   rgba(255, 255, 255, 0.10);
+
+    /* text */
+    --fg:                #ece7dc;
+    --fg-dim:            #a8a29a;
+    --fg-dimmer:         #6e6a62;
+    --fg-faint:          #4a4743;
+
+    /* accents — monochromatic, derived from --fg */
+    --accent:            #ece7dc;
+    --accent-dim:        rgba(236, 231, 220, 0.45);
+    --accent-bg:         rgba(255, 255, 255, 0.05);
+    --accent-bg-strong:  rgba(255, 255, 255, 0.10);
+
+    /* shadow */
+    --lift-soft:         0 1px 0 rgba(255,255,255,0.04) inset,
+                         0 20px 40px -20px rgba(0,0,0,0.6),
+                         0 8px 20px -12px rgba(0,0,0,0.5);
+    --lift-sidebar:      1px 0 0 rgba(0,0,0,0.15);
+
+    /* fonts — one family, everywhere. No mono, ever. */
+    --font-sans:         'FK Grotesk Neue', -apple-system, BlinkMacSystemFont,
+                         'Segoe UI', Inter, Roboto, sans-serif;
+
+    /* sizing */
+    --sidebar-w:         280px;
+    --r-lg:              14px;
+    --r-md:              10px;
+    --r-sm:              7px;
+}
+
+
+/* ---- Canvas background + text selection ----
+   pdf2htmlEX's default is white; we want dark chrome around cream pages. */
 
 html, body, #page-container {
-    background: #282828 !important;
+    background: var(--bg) !important;
 }
 
 /* Must be two separate rules: if ::-moz-selection is in a comma list with
    ::selection, Chromium treats the whole selector list as invalid and drops
    the rule — text selection falls back to the Chrome-blue default. */
-::selection     { background: #99C1DA; color: #000; }
-::-moz-selection { background: #99C1DA; color: #000; }
+::selection     { background: #99C1DA; color: #1a1816; }
+::-moz-selection { background: #99C1DA; color: #1a1816; }
 
 
-/* ---- Render window control ---------------------------------------------------
-   By default, every page's inner content (.pc) is hidden. JS adds the
-   `pdf2html-force` class to the .pf wrapper of pages within the current
-   buffer window; the more-specific rule below wins and shows them.
+/* ---- Scrollbars — slim, translucent, dark-chrome.
+   Applied to the main PDF scroller and all overlay-owned scroll containers.
+   Firefox uses `scrollbar-width`/`scrollbar-color`; WebKit the pseudo-elements.
+   The trick for the skinny thumb: render the thumb on a transparent 2px
+   border that gets stripped by `background-clip: content-box`, so the visible
+   pill is 6px wide inside a 10px gutter. */
+
+#page-container,
+#pdf2html-sidebar-body,
+#outline,
+#pdf2html-palette-complete,
+.pdf2html-cheatsheet-body,
+.pdf2html-settings-body {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255, 255, 255, 0.12) transparent;
+}
+#page-container::-webkit-scrollbar,
+#pdf2html-sidebar-body::-webkit-scrollbar,
+#outline::-webkit-scrollbar,
+#pdf2html-palette-complete::-webkit-scrollbar,
+.pdf2html-cheatsheet-body::-webkit-scrollbar,
+.pdf2html-settings-body::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+}
+#page-container::-webkit-scrollbar-track,
+#pdf2html-sidebar-body::-webkit-scrollbar-track,
+#outline::-webkit-scrollbar-track,
+#pdf2html-palette-complete::-webkit-scrollbar-track,
+.pdf2html-cheatsheet-body::-webkit-scrollbar-track,
+.pdf2html-settings-body::-webkit-scrollbar-track {
+    background: transparent;
+}
+#page-container::-webkit-scrollbar-thumb,
+#pdf2html-sidebar-body::-webkit-scrollbar-thumb,
+#outline::-webkit-scrollbar-thumb,
+#pdf2html-palette-complete::-webkit-scrollbar-thumb,
+.pdf2html-cheatsheet-body::-webkit-scrollbar-thumb,
+.pdf2html-settings-body::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.08);
+    border-radius: 10px;
+    border: 2px solid transparent;
+    background-clip: content-box;
+}
+#page-container::-webkit-scrollbar-thumb:hover,
+#pdf2html-sidebar-body::-webkit-scrollbar-thumb:hover,
+#outline::-webkit-scrollbar-thumb:hover,
+#pdf2html-palette-complete::-webkit-scrollbar-thumb:hover,
+.pdf2html-cheatsheet-body::-webkit-scrollbar-thumb:hover,
+.pdf2html-settings-body::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.18);
+    background-clip: content-box;
+}
+#page-container::-webkit-scrollbar-corner,
+#pdf2html-sidebar-body::-webkit-scrollbar-corner {
+    background: transparent;
+}
+
+
+/* ---- Render window control --------------------------------------------------
+   Baseline: every page's inner content (.pc) is hidden. overlay.js adds the
+   `pdf2html-force` class to .pf wrappers within the current buffer window;
+   the more-specific rule below wins and shows them.
+
+   DO NOT refactor to inline .style.display — pdf2htmlEX's leftover runtime
+   races us. See ADR / PLAN gotchas.
    --------------------------------------------------------------------------- */
 
 .pf > .pc                     { display: none  !important; }
 .pf.pdf2html-force > .pc      { display: block !important; }
 
 
-/* ---- Sidebar visibility toggle ----
-   Hidden by default; body.sidebar-shown reveals it. We need BOTH the
-   negative rule (to beat pdf2htmlEX in the hidden state) AND the positive
-   rule (to beat pdf2htmlEX's own `#sidebar { display: none }` in the
-   shown state). Without the affirmative rule, pdf2htmlEX's default wins
-   once `:not(.sidebar-shown)` stops matching and the toggle appears dead. */
+/* ---- Sidebar visibility + overlay mode ----
+   Hidden by default; body.sidebar-shown reveals it. BOTH rules needed —
+   the negative beats pdf2htmlEX in the hidden state, the positive beats
+   pdf2htmlEX's own `#sidebar { display: none }` in the shown state.
 
-body:not(.sidebar-shown) #sidebar        { display: none  !important; }
-body:not(.sidebar-shown) #page-container { left: 0        !important; }
-body.sidebar-shown       #sidebar        { display: block !important; }
-body.sidebar-shown       #page-container { left: 250px    !important; }
+   The sidebar OVERLAYS the PDF (design spec: PDF stays full width),
+   backed by #pdf2html-sidebar-backdrop — unlike pdf2htmlEX's default
+   push behavior. #page-container is pinned to left: 0 regardless. */
+
+body:not(.sidebar-shown) #sidebar        { display: none !important; }
+body.sidebar-shown       #sidebar        { display: flex !important; }
+#page-container                           { left: 0 !important; }
+
+#pdf2html-sidebar-backdrop {
+    position: fixed;
+    inset: 0;
+    /* Near-invisible dim — just enough for click-outside-to-close to feel
+       anchored; no perceptual "dimming the document" effect. */
+    background: rgba(0, 0, 0, 0.06);
+    z-index: 40;
+    display: none;
+    animation: pdf2html-fade-in 100ms ease-out both;
+}
+body.sidebar-shown #pdf2html-sidebar-backdrop { display: block; }
 
 
-/* ---- Floating ☰ sidebar-toggle button (top-left) ---- */
+/* ---- Floating sidebar-toggle button (top-left) ---- */
 
 #pdf2html-toggle {
     position: fixed;
-    top: 8px; left: 8px;
+    top: 10px; left: 10px;
     z-index: 9999;
+    width: 32px;
+    height: 32px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     background: transparent;
-    color: rgba(255, 255, 255, 0.18);
-    border: 0;
-    border-radius: 4px;
-    padding: 4px 9px;
-    font: 13px -apple-system, sans-serif;
+    color: rgba(236, 231, 220, 0.22);
+    border: 1px solid transparent;
+    border-radius: 7px;
+    font-family: var(--font-sans);
+    font-size: 14px;
+    line-height: 1;
     cursor: pointer;
-    transition: color 0.15s, background 0.15s;
+    transition: color 120ms ease-out, background 120ms ease-out,
+                border-color 120ms ease-out;
 }
 #pdf2html-toggle:hover {
-    background: rgba(255, 255, 255, 0.08);
-    color: rgba(255, 255, 255, 0.7);
+    background: var(--bg-hover);
+    border-color: var(--hairline);
+    color: var(--fg);
 }
+/* When the sidebar is open, the in-header close button owns the affordance;
+   hide the floating hamburger so it doesn't compete visually. */
+body.sidebar-shown #pdf2html-toggle { display: none; }
 
 
-/* ---- Sidebar (outline / TOC) restyle ---- */
+/* ============================================================================
+   Sidebar — pdf2htmlEX-provided #sidebar restyled as a fixed, overlay-mode
+   vertical stack:
+     #pdf2html-sidebar-head     (doc title + author/pages; mountSidebarHeader)
+     #pdf2html-sidebar-tabs     (Outline / Pages tab bar; mountSidebarChrome)
+     #pdf2html-sidebar-body
+       #outline                 (pdf2htmlEX-provided TOC, moved into wrapper)
+       #pdf2html-thumbs         (2-col thumbnails grid; mountThumbnails)
+     #pdf2html-sidebar-footer   (Settings + Help icon buttons)
+   ============================================================================ */
 
 #sidebar {
-    background: #1e1e1e !important;
-    color: #e0e0e0 !important;
+    background: #232323 !important;
+    color: var(--fg) !important;
     padding: 0 !important;
     border: 0 !important;
+    border-right: 1px solid var(--hairline) !important;
+    box-shadow: var(--lift-sidebar);
+    width: var(--sidebar-w) !important;
+    font-family: var(--font-sans) !important;
+    /* Overlay mode: fixed over PDF, not pushing it. z-index above backdrop
+       (40) but below cheatsheet/palette/settings (10000+). */
+    position: fixed !important;
+    top: 0 !important;
+    bottom: 0 !important;
+    left: 0 !important;
+    height: auto !important;
+    z-index: 41 !important;
+    flex-direction: column;
+    animation: pdf2html-fade-in 100ms ease-out both;
 }
+
+#pdf2html-sidebar-head {
+    padding: 14px 10px 14px 16px;
+    border-bottom: 1px solid var(--hairline);
+    min-height: 52px;
+    flex: 0 0 auto;
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+}
+#pdf2html-sidebar-head .doc-text {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+#pdf2html-sidebar-head .doc-title {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--fg);
+    line-height: 1.3;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+}
+#pdf2html-sidebar-head .doc-meta {
+    font-size: 12.5px;
+    color: var(--fg-dim);
+    margin-top: 4px;
+    font-weight: 400;
+    line-height: 1.3;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.pdf2html-sidebar-close {
+    flex: 0 0 auto;
+    width: 28px;
+    height: 28px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: transparent;
+    border: 0;
+    border-radius: 6px;
+    color: var(--fg-dim);
+    cursor: pointer;
+    transition: background 100ms ease-out, color 100ms ease-out;
+}
+.pdf2html-sidebar-close:hover {
+    background: var(--bg-hover);
+    color: var(--fg);
+}
+
+/* ---- Outline (TOC) ---------------------------------------------------------
+   pdf2htmlEX renders a nested <ul><li><a> tree. Flatten visual style, inherit
+   indentation from nesting. */
 
 #outline {
     background: transparent !important;
-    padding: 6px 4px !important;
+    padding: 8px 8px !important;
     margin: 0 !important;
-    font: 14px -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif !important;
+    font-family: var(--font-sans) !important;
+    font-size: 13px !important;
+    flex: 1 1 auto;
+    overflow-y: auto;
+    min-height: 0;
 }
 #outline ul       { list-style: none !important; padding: 0 0 0 14px !important; margin: 0 !important; }
 #outline > ul     { padding-left: 0 !important; }
@@ -82,171 +302,820 @@ body.sidebar-shown       #page-container { left: 250px    !important; }
 
 #outline a, #outline a.l {
     display: block !important;
-    padding: 9px 14px !important;
-    margin: 1px 4px !important;
+    padding: 7px 10px !important;
+    margin: 1px 0 !important;
     border-radius: 6px !important;
-    color: #e0e0e0 !important;
+    color: var(--fg-dim) !important;
     text-decoration: none !important;
-    font: 14px -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif !important;
+    font-family: var(--font-sans) !important;
+    font-size: 13px !important;
     font-weight: 400 !important;
     line-height: 1.35 !important;
-    transition: background 0.1s ease;
+    transition: background 100ms ease-out, color 100ms ease-out;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
-#outline a:hover                { background: rgba(255, 255, 255, 0.06) !important; }
-#outline a.pdf2html-active      { background: rgba(255, 255, 255, 0.13) !important; font-weight: 500 !important; }
+#outline a:hover                { background: var(--bg-hover); color: var(--fg) !important; }
+#outline a.pdf2html-active      { background: var(--accent-bg); color: var(--fg) !important; font-weight: 500 !important; }
 
 
-/* ---- Config panel at top of sidebar (render buffer + pin + render-all) ---- */
+/* ---- Hidden controls host (render buffer + pin + render-all inputs) ----
+   The settings modal and palette commands talk to state through these
+   inputs; they're kept in DOM (not replaced with plain variables) so the
+   existing change-event plumbing works unchanged. Visually invisible. */
 
-#pdf2html-cfg {
-    padding: 38px 16px 14px;
-    color: #e0e0e0;
-    border-bottom: 1px solid #333;
-    font: 13px -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif;
-    background: #181818;
+#pdf2html-hidden-controls {
+    position: absolute !important;
+    width: 0; height: 0;
+    overflow: hidden;
+    pointer-events: none;
+    opacity: 0;
+    left: -9999px;
 }
-#pdf2html-cfg label {
+
+/* ---- Sidebar tabs (Outline / Pages) --------------------------------------- */
+
+#pdf2html-sidebar-tabs {
+    display: flex;
+    padding: 6px 10px 0;
+    gap: 2px;
+    border-bottom: 1px solid var(--hairline);
+    flex: 0 0 auto;
+}
+.pdf2html-sidebar-tab {
+    padding: 8px 10px 10px;
+    font-family: var(--font-sans);
+    font-size: 12.5px;
+    color: var(--fg-dim);
+    background: transparent;
+    border: 0;
+    border-bottom: 1.5px solid transparent;
+    margin-bottom: -1px;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    cursor: pointer;
+    font-weight: 400;
+    transition: color 100ms ease-out;
+}
+.pdf2html-sidebar-tab svg { flex: 0 0 auto; }
+.pdf2html-sidebar-tab:hover { color: var(--fg); }
+.pdf2html-sidebar-tab.active {
+    color: var(--fg);
+    border-bottom-color: var(--accent);
+}
+
+/* ---- Sidebar body wrap (swaps between outline and thumbs) ----------------- */
+
+#pdf2html-sidebar-body {
+    flex: 1 1 auto;
+    overflow-y: auto;
+    min-height: 0;
+    padding: 4px 0 8px;
+}
+body[data-sidebar-tab="outline"] #outline          { display: block !important; }
+body[data-sidebar-tab="outline"] #pdf2html-thumbs  { display: none; }
+body[data-sidebar-tab="thumbs"]  #outline          { display: none !important; }
+body[data-sidebar-tab="thumbs"]  #pdf2html-thumbs  { display: grid; }
+
+/* Once moved inside the body wrap, #outline no longer needs its own scroll/
+   flex treatment — the wrap owns those. Override the earlier rules. */
+body.sidebar-shown #pdf2html-sidebar-body #outline {
+    flex: initial;
+    overflow-y: visible;
+    min-height: 0;
+    padding: 6px 8px !important;
+}
+
+/* ---- Thumbnails grid ------------------------------------------------------ */
+
+#pdf2html-thumbs {
+    padding: 10px;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+}
+.pdf2html-thumb {
+    background: transparent;
+    border: 0;
+    padding: 0;
+    cursor: pointer;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    font-family: var(--font-sans);
+    font-size: 12px;
+    color: var(--fg-dimmer);
+    text-align: center;
+    font-variant-numeric: tabular-nums;
+    transition: color 100ms ease-out;
+}
+.pdf2html-thumb .thumb-page {
+    aspect-ratio: 8.5 / 11;
+    /* White paper matches pdftocairo's output; a cream tint would show
+       as colored bars when object-fit: contain letterboxes a non-letter
+       aspect PDF. */
+    background: #ffffff;
+    border-radius: 2px;
+    border: 1.5px solid transparent;
+    overflow: hidden;
+    position: relative;
+    box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.4);
+    transition: border-color 100ms ease-out;
+}
+.pdf2html-thumb .thumb-skeleton {
+    position: absolute;
+    inset: 0;
+    padding: 8px 6px;
+    overflow: hidden;
+}
+.pdf2html-thumb .thumb-skeleton .l1,
+.pdf2html-thumb .thumb-skeleton .l2,
+.pdf2html-thumb .thumb-skeleton .l3 {
+    display: block;
+    height: 2px;
+    background: #c6bfb0;
+    margin: 2px 0;
+    border-radius: 1px;
+}
+.pdf2html-thumb .thumb-skeleton .l1 { width: 85%; }
+.pdf2html-thumb .thumb-skeleton .l2 { width: 92%; }
+.pdf2html-thumb .thumb-skeleton .l3 { width: 70%; }
+.pdf2html-thumb .thumb-img {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    /* contain (not cover) so non-letter aspect PDFs show the full page.
+       The white background matches pdftocairo's output so the letterbox
+       bars blend into the paper. */
+    object-fit: contain;
+    object-position: center;
+    display: block;
+    opacity: 0;
+    transition: opacity 100ms ease-out;
+}
+.pdf2html-thumb .thumb-page.has-img .thumb-img      { opacity: 1; }
+.pdf2html-thumb .thumb-page.has-img .thumb-skeleton { display: none; }
+.pdf2html-thumb:hover .thumb-page { border-color: var(--hairline-strong); }
+.pdf2html-thumb.active { color: var(--fg); }
+.pdf2html-thumb.active .thumb-page { border-color: var(--accent); }
+
+/* ---- Sidebar footer (Settings + Help icon buttons) ------------------------ */
+
+#pdf2html-sidebar-footer {
+    border-top: 1px solid var(--hairline);
+    padding: 8px;
     display: flex;
     align-items: center;
-    gap: 8px;
-    margin: 2px 0;
+    gap: 4px;
+    flex: 0 0 auto;
+    background: #1e1e1e;
 }
-#pdf2html-cfg input[type="number"] {
-    width: 4.5em;
-    background: #2a2a2a;
-    color: #fff;
-    border: 1px solid #3a3a3a;
-    border-radius: 4px;
-    padding: 3px 6px;
-    font: 13px -apple-system, sans-serif;
+.pdf2html-sidebar-footer-btn {
+    flex: 1;
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    padding: 9px 10px;
+    border-radius: 7px;
+    background: transparent;
+    border: 0;
+    color: var(--fg-dim);
+    cursor: pointer;
+    font-family: var(--font-sans);
+    font-size: 12.5px;
+    font-weight: 400;
+    transition: background 100ms ease-out, color 100ms ease-out;
 }
-#pdf2html-cfg input[disabled] { opacity: 0.35; }
+.pdf2html-sidebar-footer-btn:hover {
+    background: var(--bg-hover);
+    color: var(--fg);
+}
+.pdf2html-sidebar-footer-btn.icon-only {
+    flex: 0 0 auto;
+    justify-content: center;
+    padding: 9px 11px;
+}
+.pdf2html-sidebar-footer-btn .label { margin-right: auto; }
+.pdf2html-sidebar-footer-btn .shortcut {
+    font-size: 12px;
+    color: var(--fg-dimmer);
+}
 
 
-/* ---- Cheatsheet overlay (press ?) ---- */
+/* ============================================================================
+   Settings modal — opens via `:set`, sidebar footer, or Esc-stackable overlay.
+   ============================================================================ */
+
+.pdf2html-modal-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.5);
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    z-index: 10002;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 40px;
+    font-family: var(--font-sans);
+    color: var(--fg);
+    animation: pdf2html-fade-in 100ms ease-out both;
+}
+.pdf2html-settings-card {
+    width: min(620px, 100%);
+    max-height: calc(100vh - 80px);
+    background: var(--bg-elevated);
+    border: 1px solid var(--hairline-strong);
+    border-radius: var(--r-lg);
+    box-shadow: var(--lift-soft);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+}
+.pdf2html-settings-head {
+    padding: 18px 22px;
+    border-bottom: 1px solid var(--hairline);
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    flex: 0 0 auto;
+}
+.pdf2html-settings-head h2 {
+    margin: 0;
+    font-size: 15px;
+    font-weight: 500;
+    letter-spacing: -0.005em;
+}
+.pdf2html-settings-head .sub {
+    font-size: 13px;
+    color: var(--fg-dim);
+    font-weight: 400;
+    margin-top: 4px;
+}
+.pdf2html-settings-head .close {
+    font-size: 12px;
+    color: var(--fg-dim);
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+.pdf2html-settings-body {
+    padding: 8px 22px 18px;
+    overflow-y: auto;
+}
+.pdf2html-settings-group { padding: 10px 0; }
+.pdf2html-settings-group + .pdf2html-settings-group {
+    border-top: 1px solid var(--hairline);
+}
+.pdf2html-settings-group h4 {
+    font-size: 12px;
+    color: var(--fg-dim);
+    margin: 6px 0 12px;
+    font-weight: 500;
+}
+.pdf2html-settings-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 9px 0;
+    font-size: 13px;
+    gap: 16px;
+}
+.pdf2html-settings-row .label { color: var(--fg); }
+.pdf2html-settings-row .hint {
+    color: var(--fg-dim);
+    font-size: 12.5px;
+    margin-top: 2px;
+    font-weight: 400;
+}
+
+
+/* ---- Control atoms: segmented, switch, slider, accent dots ---------------- */
+
+.pdf2html-seg {
+    display: inline-flex;
+    background: var(--bg-input);
+    border: 1px solid var(--hairline);
+    border-radius: 8px;
+    padding: 2px;
+    gap: 0;
+}
+.pdf2html-seg button {
+    padding: 5px 11px;
+    font-size: 12px;
+    color: var(--fg-dim);
+    background: transparent;
+    border: 0;
+    border-radius: 6px;
+    cursor: pointer;
+    font-family: inherit;
+    font-weight: 400;
+    transition: background 100ms ease-out, color 100ms ease-out;
+}
+.pdf2html-seg button:hover:not(.active) { color: var(--fg); }
+.pdf2html-seg button.active {
+    background: var(--bg-elevated-2);
+    color: var(--fg);
+    box-shadow: 0 1px 0 rgba(255, 255, 255, 0.04) inset;
+}
+
+.pdf2html-switch {
+    width: 34px;
+    height: 20px;
+    background: var(--bg-input);
+    border: 1px solid var(--hairline);
+    border-radius: 999px;
+    position: relative;
+    cursor: pointer;
+    flex: 0 0 auto;
+    transition: background 100ms ease-out, border-color 100ms ease-out;
+}
+.pdf2html-switch::after {
+    content: '';
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: var(--fg-dim);
+    transition: left 100ms ease-out, background 100ms ease-out;
+}
+.pdf2html-switch.on {
+    background: var(--accent-bg-strong);
+    border-color: var(--accent-dim);
+}
+.pdf2html-switch.on::after {
+    left: 16px;
+    background: var(--accent);
+}
+
+.pdf2html-slider-wrap {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+}
+.pdf2html-slider-input {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 160px;
+    height: 3px;
+    background: var(--hairline-strong);
+    border-radius: 2px;
+    outline: 0;
+    cursor: pointer;
+}
+.pdf2html-slider-input::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: var(--accent);
+    cursor: pointer;
+    box-shadow: 0 0 0 3px rgba(236, 231, 220, 0.15);
+    border: 0;
+}
+.pdf2html-slider-input::-moz-range-thumb {
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: var(--accent);
+    cursor: pointer;
+    box-shadow: 0 0 0 3px rgba(236, 231, 220, 0.15);
+    border: 0;
+}
+.pdf2html-slider-input:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+.pdf2html-slider-input:disabled::-webkit-slider-thumb { cursor: not-allowed; }
+.pdf2html-slider-input:disabled::-moz-range-thumb { cursor: not-allowed; }
+
+.pdf2html-slider-readout {
+    font-size: 12px;
+    color: var(--fg-dim);
+    font-variant-numeric: tabular-nums;
+    min-width: 32px;
+    text-align: right;
+}
+
+
+/* ============================================================================
+   Cheatsheet overlay (press ?)
+   ============================================================================ */
 
 #pdf2html-cheatsheet {
     position: fixed;
     inset: 0;
     background: rgba(0, 0, 0, 0.55);
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
     z-index: 10000;
     display: flex;
     align-items: center;
     justify-content: center;
-    font: 14px -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif;
-    color: #e0e0e0;
+    padding: 40px;
+    font-family: var(--font-sans);
+    color: var(--fg);
+    animation: pdf2html-fade-in 100ms ease-out both;
 }
 #pdf2html-cheatsheet-panel {
-    background: #1e1e1e;
-    border: 1px solid #333;
-    border-radius: 10px;
-    padding: 24px 32px;
-    max-width: 640px;
-    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6);
-    max-height: 80vh;
-    overflow: auto;
+    width: min(880px, 100%);
+    max-height: calc(100vh - 80px);
+    background: var(--bg-elevated);
+    border: 1px solid var(--hairline-strong);
+    border-radius: var(--r-lg);
+    box-shadow: var(--lift-soft);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
 }
-#pdf2html-cheatsheet h3 {
-    margin: 0 0 10px;
+.pdf2html-cheatsheet-head {
+    padding: 20px 24px 16px;
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    border-bottom: 1px solid var(--hairline);
+    flex: 0 0 auto;
+}
+.pdf2html-cheatsheet-head .title {
+    font-size: 15px;
+    font-weight: 500;
+    letter-spacing: -0.005em;
+}
+.pdf2html-cheatsheet-head .subtitle {
+    font-size: 13px;
+    color: var(--fg-dim);
+    margin-top: 4px;
+    font-weight: 400;
+}
+.pdf2html-cheatsheet-head .close {
+    font-size: 12px;
+    color: var(--fg-dim);
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+.pdf2html-cheatsheet-body {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0;
+    overflow-y: auto;
+}
+.pdf2html-cheatsheet-section {
+    padding: 18px 24px;
+}
+.pdf2html-cheatsheet-section + .pdf2html-cheatsheet-section {
+    border-left: 1px solid var(--hairline);
+}
+.pdf2html-cheatsheet-section h3 {
+    font-size: 12px;
+    color: var(--fg-dim);
+    margin: 16px 0 10px;
+    font-weight: 500;
+    letter-spacing: 0;
+}
+.pdf2html-cheatsheet-section h3:first-child { margin-top: 0; }
+.pdf2html-cheatsheet-row {
+    display: grid;
+    grid-template-columns: 110px 1fr;
+    align-items: center;
+    gap: 14px;
+    padding: 7px 0;
+    font-size: 13px;
+}
+.pdf2html-cheatsheet-row + .pdf2html-cheatsheet-row {
+    border-top: 1px dashed var(--hairline);
+}
+.pdf2html-cheatsheet-row .keys {
+    display: inline-flex;
+    gap: 4px;
+    align-items: center;
+    flex-wrap: wrap;
+}
+.pdf2html-cheatsheet-row .sep-or {
+    color: var(--fg-dimmer);
+    font-size: 12px;
+    margin: 0 2px;
+}
+.pdf2html-cheatsheet-row .desc { color: var(--fg-dim); }
+.pdf2html-cheatsheet-row .cmd  { color: var(--fg); font-weight: 500; }
+.pdf2html-cheatsheet-row .cmd .alias {
+    color: var(--fg-dimmer);
+    margin-left: 8px;
+    font-size: 12.5px;
+    font-weight: 400;
+}
+
+
+/* ---- kbd chip atom (used by cheatsheet + command hint) ---- */
+
+.pdf2html-kbd {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 22px;
+    height: 22px;
+    padding: 0 6px;
+    border-radius: 5px;
+    background: var(--bg-elevated-2);
+    border: 1px solid var(--hairline-strong);
+    border-bottom-width: 2px;
+    font-family: var(--font-sans);
+    font-size: 12px;
+    color: var(--fg-dim);
+    line-height: 1;
+    font-weight: 500;
+}
+.pdf2html-kbd.sm {
+    min-width: 18px;
+    height: 18px;
     font-size: 11px;
-    font-weight: 700;
-    color: #99C1DA;
-    letter-spacing: 0.08em;
-}
-#pdf2html-cheatsheet h3:not(:first-child) { margin-top: 20px; }
-#pdf2html-cheatsheet table                { border-collapse: collapse; width: 100%; margin: 0; }
-#pdf2html-cheatsheet td                   { padding: 4px 0; vertical-align: top; font-size: 13px; }
-#pdf2html-cheatsheet td:first-child {
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    color: #f5deb3;
-    padding-right: 28px;
-    white-space: nowrap;
+    padding: 0 5px;
 }
 
 
-/* ---- Command palette (press :) — vim ex-command bar at bottom ----
-   Two stacked rows: completion strip on top (nvim wildmenu), input line
-   below. The outer wrapper has the shadow/border; per-row padding lives
-   on each inner row. */
+/* ============================================================================
+   Command palette (:) — vim ex-bar, floating pill at the bottom
+   with a vertical wildmenu above the input row.
+   ============================================================================ */
 
+/* Wrapper — fills horizontal gutter and centers a stacked column of the
+   wildmenu row (above) + input row (below). The children carry the card
+   chrome; the wrapper itself is just layout. */
 #pdf2html-palette {
     position: fixed;
-    left: 0; right: 0; bottom: 0;
+    left: 24px;
+    right: 24px;
+    bottom: 20px;
     z-index: 10001;
     display: flex;
     flex-direction: column;
-    background: #111;
-    color: #f0f0f0;
-    border-top: 1px solid #333;
-    font: 14px ui-monospace, SFMono-Regular, Menlo, monospace;
-    box-shadow: 0 -6px 20px rgba(0, 0, 0, 0.5);
+    align-items: center;
+    pointer-events: none;
+    font-family: var(--font-sans);
 }
+#pdf2html-palette > * { pointer-events: auto; }
+
+#pdf2html-palette-complete,
+#pdf2html-palette-line {
+    /* border-box so the 720px cap is the outer box — otherwise the input
+       row (32px h-padding) ends up 32px wider than the wildmenu (0 h-pad)
+       even though both are "width: 720px". */
+    box-sizing: border-box;
+    width: 100%;
+    max-width: 720px;
+    background: #1a1a1a;
+    border-left: 1px solid var(--hairline-strong);
+    border-right: 1px solid var(--hairline-strong);
+    /* Flex gotcha: flex items default to min-width: auto (content-based),
+       which lets wide grid rows inside the wildmenu bust past our 720px
+       cap. Pin it to 0 so max-width actually wins. */
+    min-width: 0;
+}
+#pdf2html-palette-complete {
+    display: flex;
+    flex-direction: column;
+    max-height: 260px;
+    overflow-y: auto;
+    padding: 4px 0;
+    border-top: 1px solid var(--hairline-strong);
+    border-bottom: 1px solid var(--hairline);
+    border-top-left-radius: var(--r-lg);
+    border-top-right-radius: var(--r-lg);
+    box-shadow: var(--lift-soft);
+}
+#pdf2html-palette-complete:empty { display: none; }
+
 #pdf2html-palette-line {
     display: flex;
     align-items: center;
-    gap: 6px;
-    padding: 8px 14px;
+    gap: 10px;
+    padding: 12px 16px;
+    background: var(--bg-elevated);
+    border-bottom: 1px solid var(--hairline-strong);
+    border-radius: 0 0 var(--r-lg) var(--r-lg);
+    box-shadow: var(--lift-soft);
 }
+/* When there's no wildmenu (bar only), the line gets the full card radius. */
+#pdf2html-palette-complete:empty + #pdf2html-palette-line,
+#pdf2html-palette:not(:has(.pdf2html-palette-match)) #pdf2html-palette-line {
+    border-radius: var(--r-lg);
+}
+
 #pdf2html-palette-prompt {
-    color: #99C1DA;
-    font-weight: 700;
+    font-size: 16px;
+    color: var(--fg-dimmer);
+    user-select: none;
+    font-weight: 400;
+    line-height: 1;
 }
 #pdf2html-palette-input {
     flex: 1;
     background: transparent;
     border: 0;
     outline: 0;
-    color: #fff;
-    font: inherit;
-    caret-color: #99C1DA;
+    color: var(--fg);
+    font-family: var(--font-sans);
+    font-size: 16px;
+    font-weight: 400;
+    caret-color: var(--accent);
+    line-height: 1.2;
 }
-#pdf2html-palette-complete {
-    display: flex;
-    gap: 18px;
-    padding: 6px 14px;
-    overflow-x: auto;
-    white-space: nowrap;
-    border-bottom: 1px solid #2a2a2a;
-    font: 12px ui-monospace, SFMono-Regular, Menlo, monospace;
-    background: #0c0c0c;
-    scrollbar-width: thin;
-}
+#pdf2html-palette-input::placeholder { color: var(--fg-dimmer); }
+
+/* Wildmenu rows — vertical nvim-style list.
+   Grid: command name | alias | description. */
 .pdf2html-palette-match {
-    color: #888;
-    flex-shrink: 0;
+    display: grid;
+    grid-template-columns: 140px 80px 1fr;
+    gap: 14px;
+    padding: 8px 16px;
+    font-size: 13px;
+    color: var(--fg-dim);
+    align-items: baseline;
+    line-height: 1.35;
     cursor: pointer;
+    border-radius: 0;
+    font-family: var(--font-sans);
+    white-space: nowrap;
+}
+/* Chapter-style rows: let the label take the wide column since chapter
+ * titles rarely fit in 140px. Page number sits in the alias slot. */
+.pdf2html-palette-match--wide {
+    grid-template-columns: 1fr 90px;
+}
+.pdf2html-palette-match--wide .pdf2html-palette-match-desc { display: none; }
+.pdf2html-palette-match .name {
+    color: var(--fg);
+    font-weight: 500;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.pdf2html-palette-match .alias {
+    color: var(--fg-dimmer);
+    font-size: 12.5px;
+    font-weight: 400;
+}
+.pdf2html-palette-match .pdf2html-palette-match-desc {
+    color: var(--fg-dim);
+    font-size: 13px;
+    font-weight: 400;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-style: normal;
+    margin-left: 0;
 }
 .pdf2html-palette-match:hover {
-    color: #ccc;
+    background: var(--bg-hover);
 }
-.pdf2html-palette-match-active {
-    color: #f5deb3;
-    font-weight: 700;
+.pdf2html-palette-match.pdf2html-palette-match-active {
+    background: var(--accent-bg);
 }
-.pdf2html-palette-match-desc {
-    color: #555;
-    font-weight: 400;
-    margin-left: 6px;
-    font-style: italic;
+.pdf2html-palette-match.pdf2html-palette-match-active .name { color: var(--fg); }
+.pdf2html-palette-match.pdf2html-palette-match-active .pdf2html-palette-match-desc { color: var(--fg); }
+
+/* Hint chip cluster on the right side of the input row. */
+.pdf2html-palette-hint {
+    font-size: 12px;
+    color: var(--fg-dimmer);
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    white-space: nowrap;
 }
+.pdf2html-palette-hint .pdf2html-kbd { margin: 0 2px; }
 
 
-/* ---- Page counter pill (top-center) ---- */
+/* ============================================================================
+   Page counter pill (top-center)
+   ============================================================================ */
 
 #pdf2html-pageno {
     position: fixed;
-    top: 8px;
+    top: 14px;
     left: 50%;
     transform: translateX(-50%);
     z-index: 9998;
-    background: rgba(30, 30, 30, 0.85);
-    color: #d0d0d0;
-    padding: 3px 10px;
-    border-radius: 5px;
-    font: 12px Helvetica, Arial, sans-serif;
-    letter-spacing: 0.02em;
-    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 14px;
+    background: rgba(40, 40, 40, 0.82);
+    backdrop-filter: blur(14px) saturate(1.2);
+    -webkit-backdrop-filter: blur(14px) saturate(1.2);
+    border: 1px solid var(--hairline-strong);
+    border-radius: 999px;
+    font-family: var(--font-sans);
+    font-size: 13px;
+    font-weight: 400;
+    color: var(--fg-dim);
+    letter-spacing: 0;
+    box-shadow: 0 8px 24px -12px rgba(0, 0, 0, 0.5);
     user-select: none;
     pointer-events: none;
+    font-variant-numeric: tabular-nums;
 }
+#pdf2html-pageno .chap   { color: var(--fg); }
+#pdf2html-pageno .sub    { color: var(--fg-dim); }
+#pdf2html-pageno .sep    { color: var(--fg-dimmer); margin: 0 2px; }
+#pdf2html-pageno .cur    { color: var(--fg); }
+#pdf2html-pageno .tot    { color: var(--fg-dim); }
 body.pageno-hidden #pdf2html-pageno { display: none; }
+
+
+/* ============================================================================
+   Scoped search (/) — find-in-visible-pages bar, bottom-center, mirrors the
+   palette's card chrome but with a single input row (no wildmenu). The
+   highlights on actual page text use the CSS Custom Highlight API, so no
+   DOM mutation inside pdf2htmlEX's positioned .t spans.
+   ============================================================================ */
+
+#pdf2html-search {
+    position: fixed;
+    left: 24px;
+    right: 24px;
+    bottom: 20px;
+    z-index: 10001;
+    display: flex;
+    justify-content: center;
+    pointer-events: none;
+    font-family: var(--font-sans);
+}
+#pdf2html-search > * { pointer-events: auto; }
+
+#pdf2html-search-line {
+    box-sizing: border-box;
+    width: 100%;
+    max-width: 720px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 16px;
+    background: var(--bg-elevated);
+    border: 1px solid var(--hairline-strong);
+    border-radius: var(--r-lg);
+    box-shadow: var(--lift-soft);
+    min-width: 0;
+    animation: pdf2html-fade-in 100ms ease-out both;
+}
+#pdf2html-search-prompt {
+    font-size: 16px;
+    color: var(--fg-dimmer);
+    user-select: none;
+    font-weight: 400;
+    line-height: 1;
+}
+#pdf2html-search-input {
+    flex: 1;
+    min-width: 0;
+    background: transparent;
+    border: 0;
+    outline: 0;
+    color: var(--fg);
+    font-family: var(--font-sans);
+    font-size: 16px;
+    font-weight: 400;
+    caret-color: var(--accent);
+    line-height: 1.2;
+}
+#pdf2html-search-input::placeholder { color: var(--fg-dimmer); }
+.pdf2html-search-count {
+    font-size: 12px;
+    color: var(--fg-dim);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    flex: 0 0 auto;
+}
+.pdf2html-search-count:empty { display: none; }
+.pdf2html-search-hint {
+    font-size: 12px;
+    color: var(--fg-dimmer);
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    white-space: nowrap;
+    flex: 0 0 auto;
+}
+.pdf2html-search-hint .pdf2html-kbd { margin: 0 2px; }
+
+/* Highlight API — yellow for every match, orange for the active one after
+   Enter. Dark text on both so the match stays readable on the light PDF. */
+::highlight(pdf2html-search-hit) {
+    background-color: #FFFF04;
+    color: #1a1816;
+}
+::highlight(pdf2html-search-active) {
+    background-color: #FF9632;
+    color: #1a1816;
+}
+
+
+/* ---- fade util used by overlays ---- */
+@keyframes pdf2html-fade-in {
+    from { opacity: 0; }
+    to   { opacity: 1; }
+}

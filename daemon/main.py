@@ -3,6 +3,8 @@
 Routes:
     GET /view?path=<local>   cached HTML or stream the PDF (miss → native viewer)
     GET /view?url=<remote>   cached HTML or 307 to <remote>  (miss → native viewer)
+    GET /stats               visit totals + top 20 by count (hash → name enriched)
+    GET /stats/recent        raw visit timeline, most-recent first
     GET /_assets/*           overlay.{css,js} from the repo assets dir
     GET /<hash>/<file>       cached pdf2htmlEX bundle (html + any sibling files)
     GET /healthz             liveness probe
@@ -24,15 +26,22 @@ import pathlib
 import urllib.parse
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
+
+import visits
 
 CACHE_DIR = pathlib.Path.home() / ".cache" / "pdf_viewer"
 REPO_DIR = pathlib.Path("/Users/andersbekkevard/dev/misc/pdf_viewer")
 ASSETS_DIR = REPO_DIR / "assets"
 
 app = FastAPI(title="pdf_viewer", version="0.1.0")
+
+
+@app.on_event("startup")
+def _startup() -> None:
+    visits.init()
 
 
 # -----------------------------------------------------------------------------
@@ -147,18 +156,19 @@ def healthz():
 
 @app.get("/view")
 def view(
+    background: BackgroundTasks,
     path: Optional[str] = Query(None, description="absolute local path"),
     url: Optional[str] = Query(None, description="http(s) URL"),
 ):
     if (path is None) == (url is None):
         raise HTTPException(400, "provide exactly one of: path, url")
     if path is not None:
-        return _view_path(path)
+        return _view_path(path, background)
     assert url is not None
-    return _view_url(url)
+    return _view_url(url, background)
 
 
-def _view_path(path: str):
+def _view_path(path: str, background: BackgroundTasks):
     try:
         p = pathlib.Path(path).expanduser().resolve(strict=True)
     except FileNotFoundError:
@@ -169,6 +179,7 @@ def _view_path(path: str):
     entry = CACHE_DIR / content_hash(p)
     html = first_html(entry)
     if html is not None:
+        background.add_task(visits.record, entry.name, "path")
         return FileResponse(html, media_type="text/html; charset=utf-8")
 
     # Cache miss. Chromium blocks http→file: redirects, so we can't 307 to
@@ -180,10 +191,11 @@ def _view_path(path: str):
 PASSTHROUGH_MARKER = "_pdfvw=passthrough"
 
 
-def _view_url(url: str):
+def _view_url(url: str, background: BackgroundTasks):
     entry = CACHE_DIR / url_hash(url)
     html = first_html(entry)
     if html is not None:
+        background.add_task(visits.record, entry.name, "url")
         return FileResponse(html, media_type="text/html; charset=utf-8")
     # Cache miss: 307 to the original URL, but tag it with a marker so the
     # browser extension's allow-rule short-circuits the redirect match —
@@ -194,6 +206,82 @@ def _view_url(url: str):
                  if parsed.query else PASSTHROUGH_MARKER)
     passthrough = urllib.parse.urlunparse(parsed._replace(query=new_query))
     return RedirectResponse(passthrough, status_code=307)
+
+
+# -----------------------------------------------------------------------------
+# Visit stats — reflective views over visits.db. Read-only; not on hot path.
+# -----------------------------------------------------------------------------
+
+def _load_mappings() -> dict[str, dict[str, str]]:
+    """hash → {source_ref, name}. One scan per request; file is small."""
+    out: dict[str, dict[str, str]] = {}
+    map_file = CACHE_DIR / "mappings.tsv"
+    if not map_file.is_file():
+        return out
+    with map_file.open(encoding="utf-8") as f:
+        for line in f:
+            parts = line.rstrip("\n").split("\t")
+            if len(parts) < 4:
+                continue
+            _ts, source_ref, hash_, html_path = parts[:4]
+            out[hash_] = {
+                "source_ref": source_ref,
+                "name": pathlib.Path(html_path).stem if html_path else hash_,
+            }
+    return out
+
+
+@app.get("/library")
+def library():
+    """All cached docs, sorted recency-first. Drives the overlay `:open`
+    palette command. Joins mappings.tsv (authoritative source ref) with
+    per-hash visit counts. Entries whose on-disk dir is gone are dropped.
+    """
+    mappings = _load_mappings()
+    counts = visits.all_counts()
+    out = []
+    for hash_, m in mappings.items():
+        entry_dir = CACHE_DIR / hash_
+        html = first_html(entry_dir)
+        if html is None:
+            continue
+        v = counts.get(hash_, {"count": 0, "last_seen": None})
+        out.append({
+            "hash": hash_,
+            "name": html.stem,
+            "source_ref": m.get("source_ref"),
+            "href": f"/{hash_}/{html.name}",
+            "count": v["count"],
+            "last_seen": v["last_seen"],
+        })
+    out.sort(key=lambda e: (
+        -(e["last_seen"] or 0),
+        -e["count"],
+        e["name"].lower(),
+    ))
+    return out
+
+
+@app.get("/stats")
+def stats():
+    s = visits.summary()
+    mappings = _load_mappings()
+    for row in s["top"]:
+        m = mappings.get(row["hash"], {})
+        row["name"] = m.get("name", row["hash"])
+        row["source_ref"] = m.get("source_ref")
+    return s
+
+
+@app.get("/stats/recent")
+def stats_recent(limit: int = Query(100, ge=1, le=1000)):
+    rows = visits.recent(limit)
+    mappings = _load_mappings()
+    for row in rows:
+        m = mappings.get(row["hash"], {})
+        row["name"] = m.get("name", row["hash"])
+        row["source_ref"] = m.get("source_ref")
+    return rows
 
 
 # -----------------------------------------------------------------------------

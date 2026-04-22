@@ -94,7 +94,7 @@ else transparently.
 
 ---
 
-## 2. Current state (phases 1, 1.5, 2, 3, 4, 5, 6 done)
+## 2. Current state (phases 1, 1.5, 2, 3, 4, 5, 6, 7 done)
 
 **What works:**
 - Overlay extracted to proper files:
@@ -155,8 +155,19 @@ else transparently.
   Blackboard signed links) are intentionally not intercepted — user
   triggers Raycast-convert manually, next visit hits cache.
 
+- **Visit tracking** (`daemon/visits.py` + `visits.db`): every `/view`
+  cache hit inserts one row `(hash, ts, kind)` via FastAPI
+  BackgroundTasks — off the response path, can never break serving.
+  SQLite WAL, synchronous=NORMAL, schema auto-init at startup. Routes:
+  `GET /stats` (totals + top 20 by count, enriched with name/source_ref
+  from `mappings.tsv`) and `GET /stats/recent?limit=N` (raw timeline).
+  Aggregates computed at query time — at personal-use volume the
+  events table stays tiny for years, so no rollup table. LRU eviction
+  is intentionally NOT wired up (PLAN §3: "Deferred until cache bloat
+  becomes real"); this is observability only.
+
 **What doesn't work yet:**
-- Visit tracking / LRU eviction (phase 7, not urgent)
+- Cross-device access over Tailscale (phase 8, optional)
 
 ---
 
@@ -267,8 +278,12 @@ def cache_key(url: str) -> str:
   logic in extension. If it bites in practice, revisit.
 
 ### Visit tracking
-- Deferred until cache bloat becomes real. Will be a FastAPI route hitting
-  SQLite. ~30 lines when we do it.
+- Implemented in phase 7: SQLite events table at
+  `~/.cache/pdf_viewer/visits.db`, written from a BackgroundTask on
+  `/view` cache hits. Reflected via `GET /stats` + `GET /stats/recent`.
+- Eviction (LRU/prune) intentionally NOT built — add only when cache
+  disk use annoys us. The event log is the only missing piece, and
+  it's now there, so building a pruner later is just a query.
 
 ### Cross-device (Tailscale)
 - Out of scope for now. Daemon bound to `127.0.0.1` only. If later needed,
@@ -384,15 +399,24 @@ Two-rule static `declarativeNetRequest`:
 The daemon's `_view_url` appends `_pdfvw=passthrough` to the 307 Location
 on cache miss so the allow-rule fires.
 
-### Phase 7 — Visit tracking  ⏳ NEXT (only if/when it matters)
-Small SQLite DB updated on every `/view` cache hit. Drives:
-- "Most-read PDFs" endpoint
-- LRU cache eviction
+### Phase 7 — Visit tracking  ✅ DONE (observability only; no eviction)
+`daemon/visits.py` maintains `~/.cache/pdf_viewer/visits.db`
+(`visits(hash, ts, kind)`, WAL, indexes on hash + ts). Insert happens
+from a FastAPI BackgroundTask in `/view` on cache hit — never blocks
+response, swallows `sqlite3.Error` so a broken DB can never break
+serving.
 
-**DoD**: Only start this when cache disk usage annoys us or when we
-genuinely want stats. Not before.
+Routes:
+- `GET /stats` — totals, first/last visit, top 20 docs by count,
+  enriched via `mappings.tsv` so hashes render as filenames.
+- `GET /stats/recent?limit=100` — raw timeline, also enriched.
 
-### Phase 8 — Cross-device (optional)
+LRU eviction deliberately NOT implemented. If cache bloat becomes a
+real problem, add a `scripts/prune-cache.sh --keep N` that queries the
+DB and `trash`es the bottom entries (scary work stays in Raycast
+scripts per ADR 0004).
+
+### Phase 8 — Cross-device (optional)  ⏳ NEXT (only if explicit desire)
 Bind daemon to `0.0.0.0` behind Tailscale; read PDFs from iPad via same
 cache. Defer until explicit desire.
 
@@ -422,8 +446,10 @@ upgrade-cache script must preserve 100% of this.
   protection). Pages outside the window get `display: none !important` via
   the `.pf > .pc` rule; pages inside get `.pdf2html-force` class
 - Render-all short-circuit: `allForced` flag, no per-scroll DOM thrash
-- Cursor pin: selectionchange → scroll `#page-container` by exact delta so
-  focus stays at `pinFraction * viewport_height` (Vim `scrolloff=999` feel)
+- Cursor pin / scrolloff: selectionchange → scroll `#page-container` so the
+  cursor stays in view. `pinned=true` locks focus to viewport center (Vim
+  `scrolloff=999` feel); `pinned=false` only scrolls when cursor enters the
+  top/bottom margin of size `scrollOffFraction * viewport_height` (0–50%).
 - Outline active tracker: highlights deepest outline entry with
   `target page ≤ current page`, auto-scrolls into view within sidebar
 - Page counter uses `document.elementFromPoint` (zoom-robust)
@@ -434,8 +460,14 @@ upgrade-cache script must preserve 100% of this.
 ### State persistence (localStorage keys)
 - `pdf2html-buffer` — render buffer page count (default 10)
 - `pdf2html-render-all` — '1' / '0', render-all checkbox state
-- `pdf2html-pin` — cursor pin fraction 0.0-1.0 (default 0.5)
+- `pdf2html-scrolloff` — scrolloff band fraction 0.0-0.5 (default 0.25)
+- `pdf2html-pinned` — '1' / '0', pin-to-center toggle (default '1')
 - `pdf2html-pageno-hidden` — '1' / '0', page counter visibility
+- `pdf2html-position:<hash>` — JSON `{page, ts}` last-visited page per doc;
+  restored on reopen unless URL carries a `#pfXX` anchor. Page 1 is not
+  resumed (treated as "nothing meaningful to remember").
+- `pdf2html-marks:<hash>` — JSON `{<letter>: {page, label, ts}}` persistent
+  bookmarks set via `:mark <a-z>`, recalled via `:jump <a-z>`.
 
 ---
 
@@ -450,6 +482,7 @@ upgrade-cache script must preserve 100% of this.
 | `A`              | Toggle render-all pages                    |
 | `⌘⇧.`            | Toggle page counter                        |
 | `:`              | Open command palette                       |
+| `⌘K`             | Quick-open: palette pre-seeded with `:open ` (library picker) |
 | `?`              | Toggle cheatsheet (requires Vimium `?` disabled on localhost:7435) |
 | `Esc`            | Close palette → close cheatsheet → clear selection |
 
@@ -459,7 +492,14 @@ upgrade-cache script must preserve 100% of this.
 |------------------|--------------------------------------------|
 | `:42`            | Goto page 42                               |
 | `:p 42`          | Alias for `:42`                            |
-| `:pin 30`        | Set cursor pin to 30%                      |
+| `:chapter <name>` | Jump to outline chapter; Tab completes against sidebar entries (case-insensitive substring) |
+| `:next` / `:prev` | Next chapter / prev chapter (or reset to current-chapter start if > NEAR_THRESHOLD pages in) |
+| `:mark <a-z>`    | Persistent bookmark of current page (localStorage, per hash) |
+| `:jump <a-z>`    | Jump to a saved mark                       |
+| `:clear <a-z>`   | Delete a saved mark                        |
+| `:open <doc>` / `:o` | Switch to another cached doc; completes against `/library` (visits-sorted) |
+| `:pin`           | Toggle pin-to-center                        |
+| `:scrolloff 25` / `:so 25` | Set scrolloff band to 25% (0-50)  |
 | `:buffer 20`     | Set render buffer to ±20 pages             |
 | `:buf 20`        | Alias for `:buffer`                        |
 | `:all`           | Toggle render-all                          |

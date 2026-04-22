@@ -27,6 +27,11 @@
 #       the pdf2htmlEX Docker image. Idempotent — existing meta.json files are
 #       overwritten so bumps to the schema propagate cleanly.
 #
+#   --mode=thumbs
+#       Run pdftocairo on every cache entry's source PDF and write per-page
+#       thumbnail JPEGs into <hash>/thumbs/. Skips entries that already have
+#       a thumbs/ directory (idempotent-ish); rm -rf it first to force rebuild.
+#
 # None of the modes mutate mappings.tsv — cache layout is preserved verbatim.
 # ============================================================================
 
@@ -38,7 +43,7 @@ CACHE_DIR="$HOME/.cache/pdf_viewer"
 LOG_FILE="$CACHE_DIR/log"
 MAP_FILE="$CACHE_DIR/mappings.tsv"
 IMAGE="pdf2htmlex/pdf2htmlex:0.18.8.rc2-master-20200820-ubuntu-20.04-x86_64"
-OVERLAY_VERSION=1
+OVERLAY_VERSION=5
 INJECTOR="$REPO_DIR/scripts/inject-overlay.py"
 
 mkdir -p "$CACHE_DIR"
@@ -49,7 +54,7 @@ die() { printf 'error: %s\n' "$*" >&2; log "FAIL: $*"; exit 1; }
 
 usage() {
     cat <<EOF
-Usage: $(basename "$0") --mode=<inject|reconvert|meta>
+Usage: $(basename "$0") --mode=<inject|reconvert|meta|thumbs>
 
   --mode=inject      Re-inject title/favicon/overlay tags into every cached
                      <hash>/*.html. No Docker required.
@@ -57,6 +62,9 @@ Usage: $(basename "$0") --mode=<inject|reconvert|meta>
                      PDF. Requires Docker.
   --mode=meta        Run pdfinfo on every cache entry's source PDF and
                      write <hash>/meta.json. Idempotent.
+  --mode=thumbs      Run pdftocairo on every cache entry's source PDF and
+                     write thumbnail JPEGs into <hash>/thumbs/. Skips
+                     entries that already have thumbs/.
 EOF
 }
 
@@ -71,8 +79,8 @@ while [[ $# -gt 0 ]]; do
 done
 
 case "$MODE" in
-    inject|reconvert|meta) ;;
-    *) usage >&2; die "--mode is required (inject|reconvert|meta)" ;;
+    inject|reconvert|meta|thumbs) ;;
+    *) usage >&2; die "--mode is required (inject|reconvert|meta|thumbs)" ;;
 esac
 
 # ----------------------------------------------------------------------------
@@ -241,5 +249,68 @@ if [[ "$MODE" == "meta" ]]; then
     done < "$MAP_FILE"
 
     say "upgrade-cache meta: $ok ok, $skipped skipped, $failed failed"
+    exit $(( failed > 0 ? 1 : 0 ))
+fi
+
+# ----------------------------------------------------------------------------
+# Mode: thumbs
+# ----------------------------------------------------------------------------
+if [[ "$MODE" == "thumbs" ]]; then
+    [[ -f "$MAP_FILE" ]] || die "mappings.tsv not found — nothing to thumb"
+
+    ok=0
+    skipped=0
+    failed=0
+    total=$(wc -l < "$MAP_FILE" | tr -d ' ')
+    say "thumbs: $total cache entries queued"
+
+    idx=0
+    while IFS=$'\t' read -r ts source_ref hash html_path; do
+        idx=$((idx + 1))
+        [[ -n "${hash:-}" ]] || { skipped=$((skipped + 1)); continue; }
+
+        out_dir="$CACHE_DIR/$hash"
+        if [[ ! -d "$out_dir" ]]; then
+            log "thumbs [$idx/$total] skip (no dir): $hash"
+            skipped=$((skipped + 1))
+            continue
+        fi
+        if [[ -d "$out_dir/thumbs" ]]; then
+            log "thumbs [$idx/$total] skip (already present): $hash"
+            skipped=$((skipped + 1))
+            continue
+        fi
+
+        # Resolve source PDF by scheme (same rules as meta mode).
+        if [[ "$source_ref" =~ ^https?:// ]]; then
+            pdf_path=$(ls "$out_dir/_source"/*.pdf 2>/dev/null | head -1)
+            if [[ -z "$pdf_path" ]]; then
+                log "thumbs [$idx/$total] skip (no cached source PDF): $source_ref"
+                skipped=$((skipped + 1))
+                continue
+            fi
+        else
+            if [[ ! -f "$source_ref" ]]; then
+                log "thumbs [$idx/$total] skip (source missing): $source_ref"
+                skipped=$((skipped + 1))
+                continue
+            fi
+            pdf_path="$source_ref"
+        fi
+
+        if "$REPO_DIR/scripts/extract-pdf-thumbs.sh" "$pdf_path" "$out_dir/thumbs" \
+                >>"$LOG_FILE" 2>&1; then
+            ok=$((ok + 1))
+            log "thumbs [$idx/$total] ok: $hash"
+        else
+            failed=$((failed + 1))
+            log "thumbs [$idx/$total] FAILED: $pdf_path"
+            # Clean up partial output so the next run retries rather than
+            # honoring the "already present" skip.
+            rm -rf "$out_dir/thumbs"
+        fi
+    done < "$MAP_FILE"
+
+    say "upgrade-cache thumbs: $ok ok, $skipped skipped, $failed failed"
     exit $(( failed > 0 ? 1 : 0 ))
 fi

@@ -13,10 +13,9 @@ import sys
 import re
 import pathlib
 import html as _html
-import urllib.parse as _up
 
 
-def inject(html: str, stem: str, version: str) -> str:
+def inject(html: str, stem: str, version: str, entry_hash: str = "") -> str:
     stem_escaped = _html.escape(stem)
 
     # --- Title -------------------------------------------------------------
@@ -26,16 +25,22 @@ def inject(html: str, stem: str, version: str) -> str:
     else:
         html = html.replace('</head>', f'<title>{stem_escaped}</title></head>', 1)
 
+    # --- Cache-entry hash meta ---------------------------------------------
+    # The overlay JS needs to know its own <hash> so it can build URLs to
+    # sibling assets (meta.json, thumbs/N.jpg). Path-based detection via
+    # location.pathname fails when the HTML is served through /view?path=...
+    # (FileResponse keeps the URL on /view), so we embed the hash explicitly.
+    html = re.sub(r'<meta id="pdf2html-hash"[^>]*>\s*', '', html)
+    if entry_hash:
+        hash_tag = f'<meta id="pdf2html-hash" name="pdf2html-hash" content="{_html.escape(entry_hash)}">'
+        html = html.replace('</head>', hash_tag + '</head>', 1)
+
     # --- Favicon -----------------------------------------------------------
     html = re.sub(
         r'<link[^>]*\brel\s*=\s*["\']?(?:shortcut\s+)?icon["\'][^>]*>\s*',
         '', html, flags=re.IGNORECASE)
-    svg = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">'
-           '<text y=".9em" font-size="90">📑</text></svg>')
-    favicon = (f'<link id="pdf2html-favicon" rel="icon" '
-               f'href="data:image/svg+xml;utf8,{_up.quote(svg)}">')
-    if 'id="pdf2html-favicon"' in html:
-        html = re.sub(r'<link id="pdf2html-favicon"[^>]*>\s*', '', html)
+    favicon = (f'<link id="pdf2html-favicon" rel="icon" type="image/svg+xml" '
+               f'href="/_assets/favicon.svg?v={version}">')
     html = html.replace('</head>', favicon + '</head>', 1)
 
     # --- Overlay link + script tags ---------------------------------------
@@ -65,12 +70,17 @@ def main() -> int:
         return 2
     path = pathlib.Path(sys.argv[1])
     stem, version = sys.argv[2], sys.argv[3]
+    # Cache layout is <cache_root>/<hash>/<stem>.html; the parent dir name
+    # is the content hash. Fall back to "" if the path doesn't match — the
+    # injector still works, just without the hash meta tag.
+    entry_hash = path.parent.name if re.fullmatch(r"[a-f0-9]{6,64}",
+                                                  path.parent.name) else ""
     try:
         html = path.read_text(encoding='utf-8', errors='ignore')
     except FileNotFoundError:
         print(f"not found: {path}", file=sys.stderr)
         return 1
-    path.write_text(inject(html, stem, version), encoding='utf-8')
+    path.write_text(inject(html, stem, version, entry_hash), encoding='utf-8')
     return 0
 
 

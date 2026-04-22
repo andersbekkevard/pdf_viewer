@@ -26,7 +26,7 @@ LOG_FILE="$CACHE_DIR/log"
 MAP_FILE="$CACHE_DIR/mappings.tsv"
 ASSET_LINK="$CACHE_DIR/_assets"
 IMAGE="pdf2htmlex/pdf2htmlex:0.18.8.rc2-master-20200820-ubuntu-20.04-x86_64"
-OVERLAY_VERSION=1  # bump to bust browser cache of /_assets/overlay.*
+OVERLAY_VERSION=6  # bump to bust browser cache of /_assets/overlay.*
 
 mkdir -p "$CACHE_DIR"
 # The Raycast wrapper forks us into the background and redirects all stdio
@@ -203,6 +203,15 @@ if [[ ! -f "$OUT_DIR/meta.json" ]]; then
     "$REPO_DIR/scripts/extract-pdf-meta.sh" \
         "$PDF_DIR/$PDF_NAME" "$OUT_DIR/meta.json" \
         || log "meta extraction failed for $PDF_NAME"
+fi
+
+# Per-page thumbnails → <hash>/thumbs/N.jpg. Non-fatal if pdftocairo is
+# unavailable or a specific page can't rasterize — overlay falls back to
+# skeleton line cards for any page whose image 404s.
+if [[ ! -d "$OUT_DIR/thumbs" ]]; then
+    "$REPO_DIR/scripts/extract-pdf-thumbs.sh" \
+        "$PDF_DIR/$PDF_NAME" "$OUT_DIR/thumbs" \
+        || log "thumb extraction failed for $PDF_NAME"
 fi
 
 # Verify the daemon is up. launchd owns it (phase 5) — this script must NOT
