@@ -67,6 +67,20 @@ html, body, #page-container {
 ::-moz-selection { background: #99C1DA; color: #1a1816; }
 
 
+/* ---- Scrolloff via scroll-padding -----------------------------------------
+   Browser-native vim `scrolloff` equivalent: reserves a band at the top and
+   bottom of the scroll viewport that the caret can't enter — every
+   scroll-into-view path (typing, shift+arrow, Vimium caret mode, outline
+   clicks, :gg/:G, hash anchors) honors it without any JS. overlay.js writes
+   `--pdf2html-scrolloff` as a percentage; pinned mode sets it to 50% so the
+   safe region collapses to a center line (auto-recentering). */
+
+#page-container {
+    scroll-padding-top:    var(--pdf2html-scrolloff, 25%);
+    scroll-padding-bottom: var(--pdf2html-scrolloff, 25%);
+}
+
+
 /* ---- Scrollbars — slim, translucent, dark-chrome.
    Applied to the main PDF scroller and all overlay-owned scroll containers.
    Firefox uses `scrollbar-width`/`scrollbar-color`; WebKit the pseudo-elements.
@@ -82,6 +96,17 @@ html, body, #page-container {
 .pdf2html-settings-body {
     scrollbar-width: thin;
     scrollbar-color: rgba(255, 255, 255, 0.12) transparent;
+}
+
+/* Focus is plumbing for Vimium j/k scroll scoping (see registerFocusRouting
+   in overlay.js), not a user-visible affordance. Suppress the default ring. */
+#pdf2html-sidebar-body:focus,
+#pdf2html-sidebar-body:focus-visible,
+.pdf2html-cheatsheet-body:focus,
+.pdf2html-cheatsheet-body:focus-visible,
+.pdf2html-settings-body:focus,
+.pdf2html-settings-body:focus-visible {
+    outline: none;
 }
 #page-container::-webkit-scrollbar,
 #pdf2html-sidebar-body::-webkit-scrollbar,

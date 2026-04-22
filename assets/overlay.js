@@ -20,6 +20,7 @@
         registerPagenoToggleHandler();
         registerRenderAllHandler();
         registerSidebarKeyHandler();
+        registerFocusRouting();
         registerPageTracker();
         mountCursorPin();
         mountRenderWindow();
@@ -157,7 +158,10 @@
             }),
         ]);
 
-        var body = el('div', { id: 'pdf2html-sidebar-body' });
+        // tabindex=-1 makes the body a valid activeElement target, so Vimium's
+        // j/k scroll scopes to the sidebar (nearest scrollable ancestor of
+        // activeElement) rather than the main page. See registerFocusRouting.
+        var body = el('div', { id: 'pdf2html-sidebar-body', tabindex: '-1' });
         if (outline && outline.parentElement === sidebar) body.appendChild(outline);
         var thumbs = el('div', { id: 'pdf2html-thumbs' });
         body.appendChild(thumbs);
@@ -194,6 +198,15 @@
         var tabs = document.querySelectorAll('#pdf2html-sidebar-tabs .pdf2html-sidebar-tab');
         for (var i = 0; i < tabs.length; i++) {
             tabs[i].classList.toggle('active', tabs[i].dataset.tab === name);
+        }
+        // Re-activate the sidebar body so Vimium j/k scrolls the newly-visible
+        // tab. Only when sidebar is shown, so palette-driven tab changes
+        // (e.g. a future `:tab thumbs`) while closed don't hijack j/k.
+        var body = document.getElementById('pdf2html-sidebar-body');
+        if (body && document.body.classList.contains('sidebar-shown')) {
+            try { body.focus({ preventScroll: true }); } catch (e) {}
+            try { body.dispatchEvent(new Event('DOMActivate', { bubbles: true, cancelable: true })); } catch (e) {}
+            try { body.dispatchEvent(new MouseEvent('click',   { bubbles: true, cancelable: true })); } catch (e) {}
         }
     }
 
@@ -324,7 +337,7 @@
             }),
         ]));
 
-        var body = el('div', { class: 'pdf2html-settings-body' });
+        var body = el('div', { class: 'pdf2html-settings-body', tabindex: '-1' });
 
         // --- Appearance ------------------------------------------------
         var curZoom = parseFloat(localStorage.getItem('pdf2html-zoom') || '1.4');
@@ -572,8 +585,109 @@
             }
             if (e.key === 's' && !e.metaKey && !e.ctrlKey && !e.altKey) {
                 document.body.classList.toggle('sidebar-shown');
+                return;
+            }
+            // ←/→ switch tabs when the sidebar is open. Guarded on sidebar-shown
+            // so arrows keep their default (scroll) behavior when it's closed.
+            if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight')
+                && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey
+                && document.body.classList.contains('sidebar-shown')) {
+                e.preventDefault();
+                setSidebarTab(e.key === 'ArrowLeft' ? 'outline' : 'thumbs');
             }
         });
+    }
+
+
+    // ------------------------------------------------------------------------
+    // Focus routing — scope Vimium's j/k to whichever overlay is open.
+    //
+    // Vimium tracks a separate `activatedElement` (its own notion of "what
+    // j/k scrolls"), NOT document.activeElement. It updates activatedElement
+    // only on DOMActivate (Chromium) or click (Firefox) — see Vimium's
+    // scroller.js Scroller.init. So calling .focus() on a scroller has zero
+    // effect on Vimium's scrolling behavior.
+    //
+    // To scope j/k to a container we must dispatch a DOMActivate (+ click,
+    // for Firefox parity) on it. activate() below does all three: focus for
+    // native keyboard nav (Tab/arrow-scroll), DOMActivate + click for Vimium.
+    //
+    // Declarative routing via MutationObserver avoids wrapping every open/
+    // close call site (sidebar toggles live in 5+ places; modals close via
+    // Esc, backdrop click, and toggle keys). The observer reacts to the
+    // canonical state change — body.sidebar-shown toggling, modal nodes
+    // added/removed — so new call sites automatically participate.
+    //
+    // Modals stash the previously-activated element on open and restore it
+    // on close, so closing settings-opened-over-sidebar hands j/k back to
+    // the sidebar. Sidebar close re-activates document.body so j/k scrolls
+    // the main page.
+    //
+    // Safety re: synthetic click — backdrop "click outside to close" checks
+    // e.target === backdrop, and the scroll containers are either descendants
+    // of their backdrop (modals) or on a sibling tree (sidebar vs its
+    // backdrop), so bubbling won't trigger a close.
+    // ------------------------------------------------------------------------
+    function registerFocusRouting() {
+        var prevActivation = { settings: null, cheatsheet: null };
+
+        function activate(el) {
+            if (!el) return;
+            try { el.focus({ preventScroll: true }); } catch (e) { try { el.focus(); } catch (e2) {} }
+            try { el.dispatchEvent(new Event('DOMActivate', { bubbles: true, cancelable: true })); } catch (e) {}
+            try { el.dispatchEvent(new MouseEvent('click',   { bubbles: true, cancelable: true })); } catch (e) {}
+        }
+        function stash(kind) {
+            var ae = document.activeElement;
+            prevActivation[kind] = (ae && ae !== document.body) ? ae : null;
+        }
+        function mainScrollTarget() {
+            // The PDF scroller — what j/k should drive when no overlay owns focus.
+            return document.getElementById('page-container') || document.body;
+        }
+        function restore(kind) {
+            var target = prevActivation[kind];
+            prevActivation[kind] = null;
+            if (target && document.contains(target)) activate(target);
+            else activate(mainScrollTarget());
+        }
+
+        // Sidebar: body.sidebar-shown is the canonical "visible" signal.
+        var wasShown = document.body.classList.contains('sidebar-shown');
+        new MutationObserver(function () {
+            var isShown = document.body.classList.contains('sidebar-shown');
+            if (isShown === wasShown) return;
+            wasShown = isShown;
+            if (isShown) {
+                activate(document.getElementById('pdf2html-sidebar-body'));
+            } else {
+                // Hand j/k back to the PDF scroller.
+                activate(mainScrollTarget());
+            }
+        }).observe(document.body, { attributes: true, attributeFilter: ['class'] });
+
+        // Modals: react to addition/removal of the backdrop nodes.
+        new MutationObserver(function (mutations) {
+            mutations.forEach(function (m) {
+                for (var i = 0; i < m.addedNodes.length; i++) {
+                    var n = m.addedNodes[i];
+                    if (!(n instanceof HTMLElement)) continue;
+                    if (n.id === 'pdf2html-settings') {
+                        stash('settings');
+                        activate(n.querySelector('.pdf2html-settings-body'));
+                    } else if (n.id === 'pdf2html-cheatsheet') {
+                        stash('cheatsheet');
+                        activate(n.querySelector('.pdf2html-cheatsheet-body'));
+                    }
+                }
+                for (var j = 0; j < m.removedNodes.length; j++) {
+                    var r = m.removedNodes[j];
+                    if (!(r instanceof HTMLElement)) continue;
+                    if (r.id === 'pdf2html-settings') restore('settings');
+                    else if (r.id === 'pdf2html-cheatsheet') restore('cheatsheet');
+                }
+            });
+        }).observe(document.body, { childList: true });
     }
 
 
@@ -655,10 +769,11 @@
                     + '<span class="pdf2html-kbd sm">Esc</span> to close'
                 + '</span>'
             + '</div>'
-            + '<div class="pdf2html-cheatsheet-body">'
+            + '<div class="pdf2html-cheatsheet-body" tabindex="-1">'
                 + '<div class="pdf2html-cheatsheet-section">'
                     + '<h3>Viewer</h3>'
                     + kRow([['s'], ['⌘','.']], 'Toggle sidebar')
+                    + kRow([['←'], ['→']], 'Sidebar: Outline / Pages tab (when open)')
                     + kRow([['A']], 'Toggle render-all pages')
                     + kRow([['⌘','⇧','.']], 'Toggle page counter')
                     + '<h3>Modes</h3>'
@@ -1452,16 +1567,18 @@
 
 
     // ------------------------------------------------------------------------
-    // Cursor pin / scrolloff — two modes for keeping selection focus in view.
+    // Cursor pin / scrolloff — CSS scroll-padding on #page-container is the
+    // single source of truth. Setting --pdf2html-scrolloff as a percentage
+    // defines the reserved band at top and bottom; every native scroll-into-
+    // view path (caret on keyboard input, shift+arrow selection extend, click
+    // to place caret, Vimium caret mode, hash navigation, outline clicks,
+    // :gg/:G, search next) honors it without JS.
     //
-    //   pinned=true  → cursor is locked to viewport center (Vim `scrolloff=999`)
-    //   pinned=false → cursor roams free inside a center band; scrolling only
-    //                  kicks in when cursor enters the top/bottom margin of
-    //                  size `scrollOffFraction * pc.clientHeight`.
-    //
-    // scrollOffFraction=0.5 is mathematically identical to pinned (the two
-    // margins meet at center), which is why the toggle clamps the slider to
-    // 50% when on — same behavior, different UX affordance.
+    //   pinned=false → padding = scrollOffFraction × 100%  (0% = off, 25% =
+    //                  keep caret in middle half, etc.)
+    //   pinned=true  → padding = 50% both sides. The "safe" region collapses
+    //                  to a single line at center, so any caret movement
+    //                  recenters (Vim `scrolloff=999`).
     // ------------------------------------------------------------------------
     var scrollOffFraction = clampScrollOff(parseFloat(localStorage.getItem('pdf2html-scrolloff') || '0.25'));
     var pinned = localStorage.getItem('pdf2html-pinned') !== '0';
@@ -1472,36 +1589,22 @@
         return f;
     }
 
+    function applyScrollOffStyle() {
+        var pct = (pinned ? 50 : scrollOffFraction * 100) + '%';
+        var pc = document.getElementById('page-container');
+        if (pc) pc.style.setProperty('--pdf2html-scrolloff', pct);
+    }
+
     function mountCursorPin() {
-        var raf = null;
-        document.addEventListener('selectionchange', function () {
-            if (raf) return;
-            raf = requestAnimationFrame(function () {
-                raf = null;
-                var sel = document.getSelection();
-                if (!sel || sel.rangeCount === 0 || sel.isCollapsed || !sel.focusNode) return;
-                var pc = document.getElementById('page-container');
-                if (!pc) return;
-                var r = document.createRange();
-                try { r.setStart(sel.focusNode, sel.focusOffset); r.collapse(true); }
-                catch (e) { return; }
-                var rect = r.getBoundingClientRect();
-                var pcRect = pc.getBoundingClientRect();
-                var cursorY = rect.top - pcRect.top;
-                var h = pc.clientHeight;
-                var delta = 0;
-                if (pinned) {
-                    delta = cursorY - h * 0.5;
-                } else {
-                    var margin = h * scrollOffFraction;
-                    if (cursorY < margin) delta = cursorY - margin;
-                    else if (cursorY > h - margin) delta = cursorY - (h - margin);
-                }
-                if (Math.abs(delta) >= 1) pc.scrollTop += delta;
-            });
-        });
-        window.__pdf2htmlSetScrollOff = function (f) { scrollOffFraction = clampScrollOff(f); };
-        window.__pdf2htmlSetPinned = function (on) { pinned = !!on; };
+        applyScrollOffStyle();
+        window.__pdf2htmlSetScrollOff = function (f) {
+            scrollOffFraction = clampScrollOff(f);
+            applyScrollOffStyle();
+        };
+        window.__pdf2htmlSetPinned = function (on) {
+            pinned = !!on;
+            applyScrollOffStyle();
+        };
     }
 
 
@@ -1632,6 +1735,7 @@
             p = Math.max(0, Math.min(50, p));
             scrollOffFraction = p / 100;
             localStorage.setItem('pdf2html-scrolloff', String(scrollOffFraction));
+            applyScrollOffStyle();
         });
 
         var pinnedInput = document.getElementById('pdf2html-pinned-input');
@@ -1639,6 +1743,7 @@
         pinnedInput.addEventListener('change', function () {
             pinned = pinnedInput.checked;
             localStorage.setItem('pdf2html-pinned', pinned ? '1' : '0');
+            applyScrollOffStyle();
         });
     }
 

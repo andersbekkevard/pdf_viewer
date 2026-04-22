@@ -479,6 +479,7 @@ upgrade-cache script must preserve 100% of this.
 |------------------|--------------------------------------------|
 | `s`              | Toggle sidebar                             |
 | `⌘.`             | Toggle sidebar                             |
+| `←` / `→`        | Switch sidebar tab (Outline / Pages) — only when sidebar is open |
 | `A`              | Toggle render-all pages                    |
 | `⌘⇧.`            | Toggle page counter                        |
 | `:`              | Open command palette                       |

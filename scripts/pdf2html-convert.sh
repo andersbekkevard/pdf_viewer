@@ -26,7 +26,7 @@ LOG_FILE="$CACHE_DIR/log"
 MAP_FILE="$CACHE_DIR/mappings.tsv"
 ASSET_LINK="$CACHE_DIR/_assets"
 IMAGE="pdf2htmlex/pdf2htmlex:0.18.8.rc2-master-20200820-ubuntu-20.04-x86_64"
-OVERLAY_VERSION=6  # bump to bust browser cache of /_assets/overlay.*
+OVERLAY_VERSION=7  # bump to bust browser cache of /_assets/overlay.*
 
 mkdir -p "$CACHE_DIR"
 # The Raycast wrapper forks us into the background and redirects all stdio
