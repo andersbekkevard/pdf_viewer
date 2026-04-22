@@ -56,6 +56,8 @@ it's probably two decisions in one file.
 | # | Title | Status |
 |---|-------|--------|
 | 0001 | [pdf2htmlEX as rendering engine](0001-pdf-to-html-engine-pdf2htmlex.md) | Accepted |
-| 0002 | [Render window and cursor pin model](0002-render-window-and-cursor-pin.md) | Accepted |
+| 0002 | [Render window and cursor pin model](0002-render-window-and-cursor-pin.md) | Accepted (§B superseded by 0006) |
 | 0003 | [Keyboard shortcut design under Vimium](0003-keyboard-shortcuts-vimium-coexistence.md) | Accepted |
 | 0004 | [On-demand Docker, always-on daemon](0004-on-demand-docker-and-daemon-split.md) | Accepted |
+| 0005 | [Vimium scroll scoping via synthetic activation events](0005-vimium-scroll-scoping-via-synthetic-activation.md) | Accepted |
+| 0006 | [Scrolloff: CSS scroll-padding plus JS fallback](0006-scrolloff-css-padding-plus-js-fallback.md) | Accepted |

@@ -6,8 +6,11 @@ instead of Chrome's sandboxed PDF surface.
 
 ![Viewer — sidebar outline + light PDF canvas](docs/screenshots/viewer.png)
 
-`PLAN.md` is the single source of truth (problem statement, decisions,
-roadmap, feature registry). This README is the orientation doc.
+This README is the orientation doc. For deeper references:
+[`docs/cache.md`](docs/cache.md) (cache design),
+[`docs/keybindings.md`](docs/keybindings.md) (full key + palette
+registry), [`docs/adr/`](docs/adr/) (architectural decisions),
+[`CLAUDE.md`](CLAUDE.md) (build / debug / gotchas).
 
 ## Why
 
@@ -46,7 +49,8 @@ position restore, …).
    no reconversion needed.
 6. **Keyboard first.** All numeric arguments go through the `:` palette,
    not `[N]<key>` prefixes. Shortcut conflicts with Vimium are
-   non-negotiable — see the "Permanently rejected" list in `PLAN.md` §7.
+   non-negotiable — see the "Permanently rejected" list in
+   [`docs/keybindings.md`](docs/keybindings.md).
 
 ## Current state
 
@@ -114,10 +118,11 @@ pdf_viewer/
 │   └── rules.json
 ├── launchd/                     # LaunchAgent plist
 ├── docs/
-│   ├── ADR/                     # immutable architectural decisions
+│   ├── adr/                     # immutable architectural decisions
+│   ├── cache.md                 # cache design: layout, hash keys, URL norm
+│   ├── keybindings.md           # full key + palette registry
+│   ├── non-goals.md             # explicit scope boundaries
 │   └── pdf2htmlex-dom.md        # DOM conventions of converted HTML
-├── PLAN.md                      # plan of record (read first)
-├── TODO.md                      # short roadmap index
 └── CLAUDE.md                    # guidance for future Claude sessions
 ```
 
@@ -178,10 +183,11 @@ only after hitting the extension's reload button.
 
 ### 4. Runtime cache (`~/.cache/pdf_viewer/`)
 
-Not checked into the repo. Bootstrapped on first run. Layout in
-`PLAN.md` §3. `_assets/` inside it is a **symlink** back to the repo's
-`assets/` so overlay edits go live without a restart. Nuking the whole
-cache loses nothing irreplaceable — next open re-converts.
+Not checked into the repo. Bootstrapped on first run. Full design in
+[`docs/cache.md`](docs/cache.md). `_assets/` inside it is a
+**symlink** back to the repo's `assets/` so overlay edits go live
+without a restart. Nuking the whole cache loses nothing irreplaceable —
+next open re-converts.
 
 ### 5. Vimium exclusion rule
 
@@ -220,7 +226,8 @@ Palette: `:42`, `:p 42`, `:chapter <name>`, `:next` / `:prev`,
 `:yank <ref|page|chapter|document>` / `:y`, `:counter` / `:num`,
 `:help` / `:h`.
 
-Full feature + keybinding registry: `PLAN.md` §6–§7.
+Full key + palette registry (including the Vimium-reserved keys we
+deliberately *don't* bind): [`docs/keybindings.md`](docs/keybindings.md).
 
 ## Screenshots
 
@@ -250,9 +257,16 @@ bust the `<script src=…?v=N>` query-string cache.
 
 ## Further reading
 
-- `PLAN.md` — decisions, phases, feature registry, gotchas
-- `docs/ADR/0001` — why pdf2htmlEX (vs marker, pdf.js, mupdf, …)
-- `docs/ADR/0002` — render-window + cursor-pin architecture
-- `docs/ADR/0003` — keyboard strategy under Vimium
-- `docs/ADR/0004` — docker-on-demand + daemon-read-only split
-- `docs/pdf2htmlex-dom.md` — DOM conventions of converted HTML
+- [`CLAUDE.md`](CLAUDE.md) — build / debug / gotchas (also the
+  orientation doc Claude sessions are handed)
+- [`docs/cache.md`](docs/cache.md) — cache layout, hash keys, URL
+  normalization, failure modes
+- [`docs/keybindings.md`](docs/keybindings.md) — full key + palette
+  registry including Vimium conflicts
+- [`docs/non-goals.md`](docs/non-goals.md) — explicit scope boundaries
+- [`docs/pdf2htmlex-dom.md`](docs/pdf2htmlex-dom.md) — DOM conventions
+  of converted HTML
+- [`docs/adr/`](docs/adr/) — architectural decisions: engine choice
+  (0001), render-window + cursor pin (0002), keyboard strategy under
+  Vimium (0003), docker-on-demand + daemon split (0004), Vimium scroll
+  scoping (0005), scrolloff (0006)
