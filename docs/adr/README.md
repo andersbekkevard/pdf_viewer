@@ -61,3 +61,5 @@ it's probably two decisions in one file.
 | 0004 | [On-demand Docker, always-on daemon](0004-on-demand-docker-and-daemon-split.md) | Accepted |
 | 0005 | [Vimium scroll scoping via synthetic activation events](0005-vimium-scroll-scoping-via-synthetic-activation.md) | Accepted |
 | 0006 | [Scrolloff: CSS scroll-padding plus JS fallback](0006-scrolloff-css-padding-plus-js-fallback.md) | Accepted |
+| 0007 | [Native browser find via cached shadow text](0007-native-browser-find-shadow-layer.md) | Accepted |
+| 0008 | [Proposed mode-aware extension keygate for Vimium coexistence](0008-proposed-mode-aware-extension-keygate.md) | Proposed |

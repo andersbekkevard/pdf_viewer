@@ -39,11 +39,11 @@ position restore, …).
    scripts. If the daemon crashes, no documents are lost; if a script
    breaks, the daemon keeps serving everything already cached.
 4. **Extension for frictionless hits; Raycast for deliberate conversions.**
-   The MV3 extension redirects `*.pdf` navigations to
-   `/view?url=<original>`. Cache hit → instant HTML. Miss → 307 back to
-   the original URL (native viewer takes over, degraded but not broken),
-   and the user runs Raycast-convert to escalate. Next visit of the same
-   doc hits cache forever.
+   The MV3 extension redirects `*.pdf` navigations to the daemon's
+   query-preserving remote view route. Cache hit → instant HTML. Miss → 307
+   back to the original URL (native viewer takes over, degraded but not
+   broken), and the user runs Raycast-convert to escalate. Next visit of the
+   same doc hits cache forever.
 5. **Overlay is the product.** `assets/overlay.{js,css}` is what the user
    actually experiences. Served live via symlink — edits reload on ⌘⇧R,
    no reconversion needed.
@@ -71,9 +71,9 @@ All core phases done (1 → 7). What works end-to-end today:
   content-hashes every PDF and converts uncached ones. Raycast wrapper
   takes a folder argument.
 - **FastAPI daemon** (`daemon/main.py`, uv project) — read-only. Routes:
-  `GET /view?path=` / `GET /view?url=` / `GET /<hash>/<file>` /
-  `GET /_assets/*` / `GET /healthz` / `GET /stats` / `GET /stats/recent` /
-  `GET /library`. Cache lookup ≈ 1–3 ms.
+  `GET /view?path=` / `GET /view?url=` / `GET /view-raw?<url>` /
+  `GET /<hash>/<file>` / `GET /_assets/*` / `GET /healthz` / `GET /stats` /
+  `GET /stats/recent` / `GET /library`. Cache lookup ≈ 1–3 ms.
 - **launchd autostart** — `launchd/com.anders.pdf_viewer.plist` symlinked
   into `~/Library/LaunchAgents/`. `KeepAlive=true`, respawns within a
   second if killed; brought up on login.
@@ -86,6 +86,10 @@ All core phases done (1 → 7). What works end-to-end today:
   logged off the response path via FastAPI `BackgroundTasks`. Powers
   `/stats`, `/stats/recent`, and the visits-sorted library picker
   behind `⌘K` / `:open`.
+- **Native `⌘F` full-document indexing** — conversion/cache-upgrade writes
+  per-page `text.json`; the overlay mounts a clipped shadow text layer so
+  browser find can scan the whole document without render-all. Overlay `/`
+  search remains visible-page scoped.
 
 What's not built: cross-device access over Tailscale (phase 8, optional).
 
@@ -199,7 +203,7 @@ next open re-converts.
 ### 5. Vimium exclusion rule
 
 Add `localhost:7435` to Vimium's "Keys to pass through" with the keys
-`? s / n N h l e q E c C 0 1 2 3 4 5 6 7 8 9`, otherwise Vimium swallows them before the overlay's
+`? s / n N h l e q E c C <c-f> 0 1 2 3 4 5 6 7 8 9`, otherwise Vimium swallows them before the overlay's
 handlers see them. One-time setup in the Vimium options page.
 
 ### 6. Docker Desktop
@@ -220,6 +224,8 @@ the migration window.
 | Key      | Action                                       |
 |----------|----------------------------------------------|
 | `⌘.` / `⌘B` | Toggle sidebar                            |
+| `Ctrl-j` / `Ctrl-k` · `↓` / `↑` | Sidebar selector up/down; `Enter` jumps |
+| `Ctrl-f` | Finger visible URL / DOI / ISBN / long-ID tokens |
 | `/` / `s` | Find in visible pages                       |
 | `A`      | Toggle render-all pages                      |
 | `e` / `q` / `E` | Next / prev page; active text selection extends pagewise |
@@ -232,7 +238,8 @@ the migration window.
 Palette: `:42`, `:p 42`, `:chapter <name>`, `:next` / `:prev`,
 `:mark <a-z>`, `:jump <a-z>`, `:clear <a-z>`, `:open <doc>` / `:o`,
 `:pin`, `:scrolloff 25` / `:so 25`, `:buffer 20` / `:buf 20`, `:all`,
-`:yank <ref|page|chapter|document>` / `:y`, `:counter` / `:num`,
+`:yank <ref|page|chapter|document>` / `:y`, `:finger` / `:f`,
+`:counter` / `:num`,
 `:help` / `:h`.
 
 Full key + palette registry (including the Vimium-reserved keys we

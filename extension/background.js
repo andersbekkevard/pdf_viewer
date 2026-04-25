@@ -6,10 +6,15 @@
 // host+path matches a cached doc gets intercepted — even signed URLs like
 // Blackboard's that don't end in `.pdf`.
 //
+// Remote redirects target `/view-raw?<original-url>` instead of
+// `/view?url=<original-url>` because declarativeNetRequest substitutions are
+// not percent-encoded. The daemon reads the raw query string there so signed
+// URLs containing `&` stay intact.
+//
 // Ordering: dynamic rules use priority 3, the static redirect uses 1, and
 // the passthrough allow uses 2. Highest priority wins, so:
-//   - cached URL click → dynamic (p3) → /view serves HTML
-//   - unknown `.pdf$` URL → static (p1) → /view 307s with marker
+//   - cached URL click → dynamic (p3) → /view-raw serves HTML
+//   - unknown `.pdf$` URL → static (p1) → /view-raw 307s with marker
 //   - 307-target with marker → allow (p2) → native viewer
 //   - cache miss on non-.pdf URL → no rule → browser opens natively
 //
@@ -20,9 +25,12 @@ const DAEMON = 'http://127.0.0.1:7435';
 const DYNAMIC_RULE_ID_BASE = 1000;
 const SYNC_ALARM = 'pdfviewer-sync';
 
-// Escape a string for inclusion inside a regex character class / pattern.
-// RE2 (what Chrome's declarativeNetRequest uses) honors the same special
-// characters as ECMAScript regex for escaping.
+// urlFilter reserves `*`, `^`, `|` as metacharacters. File paths and URL
+// paths may legitimately contain `|` (rare) or `^` (rarer), but not
+// universally safely — we reject rather than guess. `*` never appears in
+// valid URL/file paths we care about.
+const URLFILTER_META = /[*^|]/;
+
 function escapeRegex(s) {
     return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -61,10 +69,10 @@ async function _runSync() {
         return;
     }
 
-    // Chrome's declarativeNetRequest requires regexFilter to be pure ASCII.
-    // If the encoded path somehow still contains non-ASCII (macOS NFD vs
-    // NFC unicode forms between Python's JSON and JS can bite here), skip
-    // that rule with a warning rather than failing the whole sync.
+    // urlFilter must be ASCII (Chromium requirement). Encoded file paths
+    // and host+path URL segments should already be ASCII, but macOS NFD
+    // vs NFC unicode forms between Python's JSON and JS can leak non-ASCII
+    // through — skip with a warning rather than failing the whole sync.
     const isAscii = (s) => /^[\x00-\x7f]*$/.test(s);
 
     const addRules = [];
@@ -74,21 +82,20 @@ async function _runSync() {
         let rule;
         if (entry.kind === 'file') {
             // Chromium percent-encodes file:// paths segment-by-segment
-            // (spaces → %20, non-ASCII → UTF-8 %XX). Mirror that so the
-            // regex filter matches the encoded URL the browser sends.
+            // (spaces → %20, non-ASCII → UTF-8 %XX). Mirror that to match
+            // the URL the browser actually navigates to.
             const encodedPath = entry.path
                 .split('/')
                 .map(encodeURIComponent)
                 .join('/');
-            const regexFilter = `^file://${escapeRegex(encodedPath)}(?:\\?.*)?$`;
+            // `|` anchors to URL start; trailing `^` matches separator or
+            // end-of-URL, so `...pdf`, `...pdf?x=1`, `...pdf#frag` all match.
+            const urlFilter = `|file://${encodedPath}^`;
 
-            if (!isAscii(regexFilter)) {
+            if (!isAscii(urlFilter) || URLFILTER_META.test(encodedPath)) {
                 console.warn(
-                    'pdf_viewer: non-ASCII in regex — skipping rule for',
-                    entry.path,
-                    'encodedPath:', JSON.stringify(encodedPath),
-                    'first non-ASCII code point:',
-                    regexFilter.split('').find(c => c.charCodeAt(0) > 127)?.charCodeAt(0)?.toString(16)
+                    'pdf_viewer: unsafe chars in urlFilter — skipping',
+                    entry.path
                 );
                 continue;
             }
@@ -102,17 +109,20 @@ async function _runSync() {
                     }
                 },
                 condition: {
-                    regexFilter,
+                    urlFilter,
                     resourceTypes: ['main_frame']
                 }
             };
         } else {
-            // URL kind.
-            const regexFilter = `^https?://${escapeRegex(entry.host + entry.path)}(?:\\?.*)?$`;
+            // URL kind. Preserve the exact navigation URL in the redirect so
+            // stale dynamic-rule cache misses still fall back with signed
+            // query strings intact.
+            const hostPath = entry.host + entry.path;
+            const regexFilter = `^https?://${escapeRegex(hostPath)}(?:[?#].*)?$`;
             if (!isAscii(regexFilter)) {
                 console.warn(
                     'pdf_viewer: non-ASCII in regex — skipping rule for',
-                    entry.host + entry.path
+                    hostPath
                 );
                 continue;
             }
@@ -122,7 +132,7 @@ async function _runSync() {
                 action: {
                     type: 'redirect',
                     redirect: {
-                        regexSubstitution: `${DAEMON}/view?url=\\0`
+                        regexSubstitution: `${DAEMON}/view-raw?\\0`
                     }
                 },
                 condition: {
@@ -174,19 +184,45 @@ async function _runSync() {
             return;
         }
     }
+    // Batch add, with per-rule fallback on failure. Keeps one bad rule from
+    // poisoning the whole batch (used to happen routinely under regexFilter
+    // due to Chromium's 2KB compiled-memory limit; less likely with urlFilter
+    // but the fallback is cheap insurance against future validation edges).
+    let installed = 0;
+    const skipped = [];
     if (addRules.length > 0) {
         try {
-            await chrome.declarativeNetRequest.updateDynamicRules({
-                addRules
-            });
+            await chrome.declarativeNetRequest.updateDynamicRules({ addRules });
+            installed = addRules.length;
         } catch (e) {
-            console.error('pdf_viewer: add stage failed —', e.message);
-            return;
+            console.warn(
+                `pdf_viewer: batch add failed (${e.message}) — falling back to per-rule`
+            );
+            for (const rule of addRules) {
+                try {
+                    await chrome.declarativeNetRequest.updateDynamicRules({
+                        addRules: [rule]
+                    });
+                    installed++;
+                } catch (err) {
+                    skipped.push({
+                        id: rule.id,
+                        reason: err.message,
+                        filter: rule.condition.urlFilter || rule.condition.regexFilter
+                    });
+                }
+            }
         }
     }
+    if (skipped.length > 0) {
+        console.warn(
+            `pdf_viewer: skipped ${skipped.length} over-limit rules:`,
+            skipped
+        );
+    }
     console.log(
-        `pdf_viewer: synced ${addRules.length} cache entries ` +
-        `(${removeRuleIds.length} stale rules removed)`
+        `pdf_viewer: synced ${installed}/${addRules.length} cache entries ` +
+        `(${removeRuleIds.length} stale rules removed, ${skipped.length} skipped)`
     );
 }
 

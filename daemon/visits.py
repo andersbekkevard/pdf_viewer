@@ -15,6 +15,7 @@ import time
 from typing import Literal
 
 DB_PATH = pathlib.Path.home() / ".cache" / "pdf_viewer" / "visits.db"
+SESSION_WINDOW_SEC = 15 * 60
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS visits (
@@ -95,6 +96,57 @@ def all_counts() -> dict[str, dict]:
         return {h: {"count": n, "last_seen": t} for h, n, t in rows}
     except sqlite3.Error:
         return {}
+
+
+def _zoxide_multiplier(age_sec: int) -> float:
+    """zoxide-style query-time recency multiplier."""
+    if age_sec < 3600:
+        return 4.0
+    if age_sec < 86400:
+        return 2.0
+    if age_sec < 604800:
+        return 0.5
+    return 0.25
+
+
+def all_frecency(now: int | None = None) -> dict[str, dict]:
+    """hash → sessionized zoxide-style frecency metrics.
+
+    Rank is one effective open per 15-minute wall-clock bucket. Raw visits
+    stay available for diagnostics/display, but reloads and browser restores
+    inside the same bucket do not inflate the score.
+    """
+    if now is None:
+        now = int(time.time())
+    try:
+        with _connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    hash,
+                    COUNT(*) AS raw_count,
+                    COUNT(DISTINCT CAST(ts / ? AS INTEGER)) AS rank,
+                    MAX(ts) AS last_seen
+                FROM visits
+                GROUP BY hash
+                """,
+                (SESSION_WINDOW_SEC,),
+            ).fetchall()
+    except sqlite3.Error:
+        return {}
+
+    out = {}
+    for hash_, raw_count, rank, last_seen in rows:
+        age_sec = max(0, now - last_seen)
+        multiplier = _zoxide_multiplier(age_sec)
+        out[hash_] = {
+            "raw_count": raw_count,
+            "rank": rank,
+            "last_seen": last_seen,
+            "age_multiplier": multiplier,
+            "frecency_score": rank * multiplier,
+        }
+    return out
 
 
 def recent(limit: int = 100) -> list[dict]:

@@ -26,7 +26,7 @@ LOG_FILE="$CACHE_DIR/log"
 MAP_FILE="$CACHE_DIR/mappings.tsv"
 ASSET_LINK="$CACHE_DIR/_assets"
 IMAGE="pdf2htmlex/pdf2htmlex:0.18.8.rc2-master-20200820-ubuntu-20.04-x86_64"
-OVERLAY_VERSION=19  # bump to bust browser cache of /_assets/overlay.*
+OVERLAY_VERSION=23  # bump to bust browser cache of /_assets/overlay.*
 
 mkdir -p "$CACHE_DIR"
 # The Raycast wrapper forks us into the background and redirects all stdio
@@ -198,6 +198,15 @@ fi
 python3 "$REPO_DIR/scripts/inject-overlay.py" \
     "$OUT_DIR/$OUT_NAME" "${PDF_NAME%.*}" "$OVERLAY_VERSION" \
     || fail "overlay injection failed"
+
+# Native browser find indexes only rendered/layout text. The overlay mounts a
+# lightweight per-page shadow layer from this JSON so Cmd-F can scan the whole
+# document without forcing every pdf2htmlEX page visible.
+if [[ ! -f "$OUT_DIR/text.json" ]]; then
+    python3 "$REPO_DIR/scripts/extract-find-text.py" \
+        "$OUT_DIR/$OUT_NAME" "$OUT_DIR/text.json" \
+        || fail "find-text extraction failed"
+fi
 
 # Verify the daemon is up. launchd owns it (phase 5) — this script must NOT
 # fall back to starting `python3 -m http.server`, because the daemon's GET /

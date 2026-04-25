@@ -3,6 +3,7 @@
 Routes:
     GET /view?path=<local>   cached HTML or stream the PDF (miss → native viewer)
     GET /view?url=<remote>   cached HTML or 307 to <remote>  (miss → native viewer)
+    GET /view-raw?<remote>   same as /view?url=, but preserves raw query strings
     GET /stats               visit totals + top 20 by count (hash → name enriched)
     GET /stats/recent        raw visit timeline, most-recent first
     GET /_assets/*           overlay.{css,js} from the repo assets dir
@@ -24,11 +25,12 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import pathlib
+import re
 import time
 import urllib.parse
 from typing import Optional
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException, Query
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -241,6 +243,29 @@ def view(
     return _view_url(url, background)
 
 
+@app.get("/view-raw")
+def view_raw(request: Request, background: BackgroundTasks):
+    """Remote URL view route for extension redirects.
+
+    declarativeNetRequest regex substitutions cannot percent-encode captures.
+    The extension therefore redirects to `/view-raw?<original-url>` and this
+    route treats the entire raw query string as the URL, preserving signed
+    query strings containing `&`.
+    """
+    raw_query = request.scope.get("query_string", b"")
+    if not raw_query:
+        raise HTTPException(400, "missing raw URL query string")
+    try:
+        url = raw_query.decode("ascii")
+    except UnicodeDecodeError:
+        raise HTTPException(400, "raw URL must be ASCII / percent-encoded")
+
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise HTTPException(400, "raw URL must be an absolute http(s) URL")
+    return _view_url(url, background)
+
+
 def _view_path(path: str, background: BackgroundTasks):
     try:
         p = pathlib.Path(path).expanduser().resolve(strict=True)
@@ -304,32 +329,68 @@ def _load_mappings() -> dict[str, dict[str, str]]:
     return out
 
 
+def _normalized_search_text(*parts: Optional[str]) -> str:
+    text = " ".join(p for p in parts if p)
+    text = urllib.parse.unquote(text)
+    return re.sub(r"\s+", " ", text.casefold()).strip()
+
+
+def _library_search_text(name: str, source_ref: Optional[str]) -> str:
+    """Search text for `:open`: clean name plus source path/URL context."""
+    parts = [name]
+    if source_ref:
+        parsed = urllib.parse.urlparse(source_ref)
+        if parsed.scheme in {"http", "https"}:
+            parts.append(parsed.netloc)
+            parts.append(parsed.path)
+            parts.append(pathlib.PurePosixPath(parsed.path).name)
+        else:
+            parts.append(source_ref)
+            parts.append(pathlib.Path(source_ref).name)
+            parts.append(str(pathlib.Path(source_ref).parent))
+    return _normalized_search_text(*parts)
+
+
 @app.get("/library")
 def library():
-    """All cached docs, sorted recency-first. Drives the overlay `:open`
+    """All cached docs, sorted by zoxide-style frecency. Drives `:open`.
+
     palette command. Joins mappings.tsv (authoritative source ref) with
-    per-hash visit counts. Entries whose on-disk dir is gone are dropped.
+    visit-derived frecency metrics. Entries whose on-disk dir is gone are
+    dropped.
     """
     mappings = _load_mappings()
-    counts = visits.all_counts()
+    scores = visits.all_frecency()
     out = []
     for hash_, m in mappings.items():
         entry_dir = CACHE_DIR / hash_
         html = first_html(entry_dir)
         if html is None:
             continue
-        v = counts.get(hash_, {"count": 0, "last_seen": None})
+        v = scores.get(hash_, {
+            "raw_count": 0,
+            "rank": 0,
+            "last_seen": None,
+            "age_multiplier": 0.0,
+            "frecency_score": 0.0,
+        })
+        name = html.stem
+        source_ref = m.get("source_ref")
         out.append({
             "hash": hash_,
-            "name": html.stem,
-            "source_ref": m.get("source_ref"),
+            "name": name,
+            "source_ref": source_ref,
+            "search_text": _library_search_text(name, source_ref),
             "href": f"/{hash_}/{html.name}",
-            "count": v["count"],
+            "count": v["raw_count"],
+            "rank": v["rank"],
             "last_seen": v["last_seen"],
+            "age_multiplier": v["age_multiplier"],
+            "frecency_score": v["frecency_score"],
         })
     out.sort(key=lambda e: (
+        -e["frecency_score"],
         -(e["last_seen"] or 0),
-        -e["count"],
         e["name"].lower(),
     ))
     return out

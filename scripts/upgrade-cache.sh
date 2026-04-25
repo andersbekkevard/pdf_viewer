@@ -32,6 +32,11 @@
 #       thumbnail JPEGs into <hash>/thumbs/. Skips entries that already have
 #       a thumbs/ directory (idempotent-ish); rm -rf it first to force rebuild.
 #
+#   --mode=text
+#       Extract per-page plain text from each cached pdf2htmlEX HTML file into
+#       <hash>/text.json for native browser Cmd-F shadow indexing. No Docker
+#       or source PDF required.
+#
 # None of the modes mutate mappings.tsv — cache layout is preserved verbatim.
 # ============================================================================
 
@@ -43,8 +48,9 @@ CACHE_DIR="$HOME/.cache/pdf_viewer"
 LOG_FILE="$CACHE_DIR/log"
 MAP_FILE="$CACHE_DIR/mappings.tsv"
 IMAGE="pdf2htmlex/pdf2htmlex:0.18.8.rc2-master-20200820-ubuntu-20.04-x86_64"
-OVERLAY_VERSION=19
+OVERLAY_VERSION=23
 INJECTOR="$REPO_DIR/scripts/inject-overlay.py"
+TEXT_EXTRACTOR="$REPO_DIR/scripts/extract-find-text.py"
 
 mkdir -p "$CACHE_DIR"
 
@@ -54,7 +60,7 @@ die() { printf 'error: %s\n' "$*" >&2; log "FAIL: $*"; exit 1; }
 
 usage() {
     cat <<EOF
-Usage: $(basename "$0") --mode=<inject|reconvert|meta|thumbs>
+Usage: $(basename "$0") --mode=<inject|reconvert|meta|thumbs|text>
 
   --mode=inject      Re-inject title/favicon/overlay tags into every cached
                      <hash>/*.html. No Docker required.
@@ -65,6 +71,8 @@ Usage: $(basename "$0") --mode=<inject|reconvert|meta|thumbs>
   --mode=thumbs      Run pdftocairo on every cache entry's source PDF and
                      write thumbnail JPEGs into <hash>/thumbs/. Skips
                      entries that already have thumbs/.
+  --mode=text        Extract per-page plain text from cached HTML into
+                     <hash>/text.json for native browser Cmd-F.
 EOF
 }
 
@@ -79,8 +87,8 @@ while [[ $# -gt 0 ]]; do
 done
 
 case "$MODE" in
-    inject|reconvert|meta|thumbs) ;;
-    *) usage >&2; die "--mode is required (inject|reconvert|meta|thumbs)" ;;
+    inject|reconvert|meta|thumbs|text) ;;
+    *) usage >&2; die "--mode is required (inject|reconvert|meta|thumbs|text)" ;;
 esac
 
 # ----------------------------------------------------------------------------
@@ -108,6 +116,32 @@ if [[ "$MODE" == "inject" ]]; then
     shopt -u nullglob
 
     say "upgrade-cache inject: $updated updated, $skipped skipped, $failed failed"
+    exit $(( failed > 0 ? 1 : 0 ))
+fi
+
+# ----------------------------------------------------------------------------
+# Mode: text
+# ----------------------------------------------------------------------------
+if [[ "$MODE" == "text" ]]; then
+    updated=0
+    skipped=0
+    failed=0
+
+    shopt -s nullglob
+    for html in "$CACHE_DIR"/*/*.html; do
+        case "$html" in "$CACHE_DIR"/_assets/*) continue ;; esac
+        out_dir=$(dirname "$html")
+        out="$out_dir/text.json"
+        if python3 "$TEXT_EXTRACTOR" "$html" "$out" >>"$LOG_FILE" 2>&1; then
+            updated=$((updated + 1))
+        else
+            log "text extraction failed: $html"
+            failed=$((failed + 1))
+        fi
+    done
+    shopt -u nullglob
+
+    say "upgrade-cache text: $updated updated, $skipped skipped, $failed failed"
     exit $(( failed > 0 ? 1 : 0 ))
 fi
 
@@ -182,7 +216,13 @@ if [[ "$MODE" == "reconvert" ]]; then
 
             if python3 "$INJECTOR" "$out_dir/$out_name" "${pdf_name%.*}" \
                     "$OVERLAY_VERSION" >>"$LOG_FILE" 2>&1; then
-                ok=$((ok + 1))
+                if python3 "$TEXT_EXTRACTOR" "$out_dir/$out_name" "$out_dir/text.json" \
+                        >>"$LOG_FILE" 2>&1; then
+                    ok=$((ok + 1))
+                else
+                    log "reconvert [$idx/$total] find-text FAILED: $out_dir/$out_name"
+                    failed=$((failed + 1))
+                fi
             else
                 log "reconvert [$idx/$total] inject FAILED: $out_dir/$out_name"
                 failed=$((failed + 1))

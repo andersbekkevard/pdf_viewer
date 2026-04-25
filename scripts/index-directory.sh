@@ -47,8 +47,9 @@ LOG_FILE="$CACHE_DIR/log"
 MAP_FILE="$CACHE_DIR/mappings.tsv"
 ASSET_LINK="$CACHE_DIR/_assets"
 IMAGE="pdf2htmlex/pdf2htmlex:0.18.8.rc2-master-20200820-ubuntu-20.04-x86_64"
-OVERLAY_VERSION=19
+OVERLAY_VERSION=23
 INJECTOR="$REPO_DIR/scripts/inject-overlay.py"
+TEXT_EXTRACTOR="$REPO_DIR/scripts/extract-find-text.py"
 
 mkdir -p "$CACHE_DIR"
 
@@ -140,6 +141,17 @@ for idx in "${!PDFS[@]}"; do
         "$REPO_DIR/scripts/extract-pdf-meta.sh" "$pdf" "$out_dir/meta.json" \
             >>"$LOG_FILE" 2>&1 \
             || log "[${n}/${total}] meta extraction failed for $pdf"
+    fi
+
+    # Native Cmd-F support — generated from cached HTML, so cache hits created
+    # before this feature can be backfilled without reconversion.
+    if [[ ! -f "$out_dir/text.json" ]]; then
+        final_html=$(ls "$out_dir"/*.html 2>/dev/null | head -1)
+        if [[ -n "$final_html" ]]; then
+            python3 "$TEXT_EXTRACTOR" "$final_html" "$out_dir/text.json" \
+                >>"$LOG_FILE" 2>&1 \
+                || log "[${n}/${total}] find-text extraction failed for $pdf"
+        fi
     fi
 
     # Upsert mapping (dedup on hash). Happens for cache hits too so that a

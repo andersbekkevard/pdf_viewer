@@ -25,7 +25,8 @@ as an A/B reference and must not be touched.
 │   ├── <stem>.outline.js + fonts/images/...  pdf2htmlEX output assets
 │   ├── _source/         downloaded source PDF (remote) or none (local)
 │   │   └── document.pdf
-│   └── meta.json        source URL/path, display name, timestamps
+│   ├── meta.json        source URL/path, display name, timestamps
+│   └── text.json        per-page plain text for native Cmd-F shadow indexing
 └── ...
 ```
 
@@ -74,8 +75,11 @@ Resolution order:
 The daemon (`daemon/main.py`) is read-only and never invokes Docker
 (ADR 0004). Miss handling:
 
-- `GET /view?url=<remote>` → **307 to the original URL**. Browser opens
-  the native PDF viewer (degraded but present). User escalates to HTML
+- `GET /view?url=<remote>` and the extension-only
+  `GET /view-raw?<remote>` → **307 to the original URL**. `/view-raw`
+  reads the entire raw query string as the remote URL so signed URLs with
+  `&` parameters are not split into daemon query params. Browser opens the
+  native PDF viewer on miss (degraded but present). User escalates to HTML
   by running Raycast-convert; next visit of the same doc hits cache.
 - `GET /view?path=<local>` → **streams PDF bytes as
   `application/pdf`**. A 307 to `file://` would work in the native
@@ -92,6 +96,17 @@ query time; personal-use volume keeps the events table tiny for years.
 
 Powers `/stats`, `/stats/recent`, and the visits-sorted library picker
 behind `⌘K` / `:open`.
+
+## Find text
+
+`text.json` is extracted from the cached pdf2htmlEX HTML, not the source PDF.
+The overlay mounts it as a clipped per-page shadow layer so native browser
+`Cmd-F` can index the full document without toggling render-all. Existing
+entries can be backfilled without Docker:
+
+```bash
+scripts/upgrade-cache.sh --mode=text
+```
 
 **LRU eviction is deliberately not implemented.** Add a
 `scripts/prune-cache.sh --keep N` when cache bloat actually becomes a

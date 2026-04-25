@@ -41,17 +41,21 @@ whitespace trimmed).
 
 ## Page numbering (the hex gotcha)
 
-pdf2htmlEX uses **hex** for page IDs but **decimal** for the `data-page-no`
-attribute and for `a.l[data-dest-detail]` values.
+pdf2htmlEX uses **hex** for page IDs and, in the pinned engine output we use,
+also stores that same unprefixed hex value in `data-page-no`. Older notes in
+this repo assumed `data-page-no` was decimal; that is false for pages like
+`#pf140` (`data-page-no="140"`, decimal page 320). Treat the `#pf...` ID as
+authoritative. `a.l[data-dest-detail]` values are PDF-native decimal page
+targets.
 
 | Page (decimal) | Element ID | `data-page-no` attr |
 |---|---|---|
 | 1 | `#pf1` | `1` |
 | 9 | `#pf9` | `9` |
-| 10 | `#pfa` | `10` |
-| 21 | `#pf15` | `21` |
-| 213 | `#pfd5` | `213` |
-| 797 | `#pf31d` | `797` |
+| 10 | `#pfa` | `a` |
+| 21 | `#pf15` | `15` |
+| 213 | `#pfd5` | `d5` |
+| 797 | `#pf31d` | `31d` |
 
 So to resolve "user typed `:42`" → the element:
 ```js

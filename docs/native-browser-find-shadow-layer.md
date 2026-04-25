@@ -1,5 +1,9 @@
 # Native browser find via shadow text layer
 
+Status: V1 implemented. See
+[`ADR 0007`](adr/0007-native-browser-find-shadow-layer.md) for the accepted
+architecture and current trade-offs.
+
 Proposal for making native browser find (`Cmd+F`) index the full PDF text
 without forcing the visible render window open across the entire document.
 
@@ -51,7 +55,7 @@ to feed native browser find.
 Rough shape:
 
 ```html
-<div id="pf2a" class="pf" data-page-no="42">
+<div id="pf2a" class="pf" data-page-no="2a">
   <div class="pc">…visible pdf2htmlEX page…</div>
   <div class="pdf2html-find-shadow" aria-hidden="true">
     Chapter title…

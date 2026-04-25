@@ -13,6 +13,8 @@ For the rationale on the overall keyboard strategy, see
 |------------------------|---------------------------------------------------------------|
 | `⌘.` · `⌘B`            | Toggle sidebar                                                |
 | `Tab`                  | When sidebar is open, toggle `j`/`k` scroll focus between the sidebar and the main PDF |
+| `Ctrl-j` / `Ctrl-k` · `↓` / `↑` | When the sidebar Outline or Pages tab is open, move the temporary selector; `Enter` jumps to it |
+| `Ctrl-f`               | Finger visible URL / DOI / ISBN / long-ID tokens              |
 | `/` · `s`              | Find in visible pages (Enter jump, `n` / `N` cycle)           |
 | `←` / `→` · `h` / `l`  | Switch sidebar tab (Outline / Pages) — only when sidebar open |
 | `A`                    | Toggle render-all pages                                       |
@@ -42,6 +44,7 @@ For the rationale on the overall keyboard strategy, see
 | `:buffer 20` / `:buf 20`     | Set render buffer to ±20 pages                                                   |
 | `:all`                       | Toggle render-all                                                                |
 | `:yank <kind>` / `:y <kind>` | `ref` (default, "Chapter · p. N") · `page` · `chapter` · `document`              |
+| `:finger` / `:f`             | Hint visible URL / DOI / ISBN / long-ID tokens; exact hint copies token          |
 | `:counter` / `:num`          | Toggle page counter                                                              |
 | `:set`                       | Open Settings modal                                                              |
 | `:help` / `:h`               | Open cheatsheet                                                                  |
@@ -61,6 +64,11 @@ of the target page; backward motion lands at the end.
 With a non-collapsed browser text selection, bare `c` selects the entire
 outline chapter containing the selection focus. `C` keeps its existing
 previous-chapter navigation behavior.
+
+Finger mode uses only keys already in the Vimium pass-through list:
+`e s q c h l n`. If more than seven visible targets exist, hints become
+two or more letters from that same alphabet. `Backspace` edits the typed
+prefix; `Esc` exits without copying.
 
 ## Permanently rejected (Vimium conflicts)
 
@@ -90,7 +98,7 @@ That's the escape hatch.
 ## Vimium setup
 
 Add `localhost:7435` to Vimium's "Keys to pass through" with the keys
-`? s / n N h l e q E c C 0 1 2 3 4 5 6 7 8 9`. Without this, Vimium
+`? s / n N h l e q E c C <c-f> 0 1 2 3 4 5 6 7 8 9`. Without this, Vimium
 swallows them before the overlay's handlers see them — in particular,
 Vimium's own count buffer eats the digits in `10e` / `10q`. One-time
 setup in the Vimium options page.

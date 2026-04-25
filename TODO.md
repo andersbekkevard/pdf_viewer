@@ -1,6 +1,7 @@
 - [ ] Make :open be a bit more picky on what files to show, using a zoxide based algo from the "open" db
 - [ ] Maybe UI for eviction in :open
-- [ ] Add a prefix F as in tmux fingers for yanking likely sections that go together (paths, urls, but also commands, text that is separated by the other text)
+- [ ] Fix overview navigation / selection polish: clicking an outline entry should immediately move the highlighted active chapter in the outline, and in the overview/pages surface `j` / `k` should move between entries with `Enter` selecting the focused one.
+- [ ] Make fingers select more things and make the UI pretty.
 - [ ] Explore native `Cmd+F` over the whole document via a per-page shadow text layer; start with V1, likely continue to V2 after validating Chromium behavior. See [docs/native-browser-find-shadow-layer.md](docs/native-browser-find-shadow-layer.md).
 - [ ] Acutually integrate with/fork pdf2htmlEX. There is obviously a lot of additional value in integrating with pdf2htmlEX.
 - [ ] Make it so the text is ordered correctly on the page from vertical spacing, so scrolling in mark mode with j, k etc doesnt jump up and down if e.g. the pdf text of figures is in a different text layer.
@@ -23,5 +24,9 @@ Either way: these workflows still have to boil down to the .pdf format for the f
 Hence: Building an ergonomic pdf viewer like this is structurally important in this day and age.
 
 This is a power user tool and UI. Of course not the only group to target, but: Targeting power users is strategically sound as they will be driving the progress the next 5 years. We are dropping red-bull cans in bins at Harvard.
+https://info.arxiv.org/about/accessible_HTML.html This exists. Further epmhasis
 
 Fun mention: I am now tackling the pdf space in the AI era, analogue to how Steipete did it in the old times.
+
+- [ ] Links perlexity and the command f search text overlay. How can we make that overlay in a way that it integrates with the perplexity assistant sidebar
+- [ ] 1063 vs 1073 "Internet" in KTN pensumbok: Why

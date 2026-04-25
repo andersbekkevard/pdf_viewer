@@ -16,6 +16,7 @@
         registerEscapeHandler();
         registerQuestionHandler();
         registerPaletteHandler();
+        registerFingerShortcutHandler();
         registerQuickOpenHandler();
         registerSettingsHandler();
         registerPagenoToggleHandler();
@@ -26,12 +27,14 @@
         registerPageTracker();
         mountCursorPin();
         mountRenderWindow();
+        mountNativeFindShadowLayer();
         mountOutlineActiveTracker();
         mountPageCounter();
         mountResumePosition();
         mountZoom();
         mountSidebarBackdrop();
         mountSidebarChrome();
+        mountOutlineScrollSelection();
         mountSidebarHeader();
         mountSidebarLayout();
         mountThumbnails();
@@ -44,6 +47,7 @@
     // on scroll; other commands (`:mark`, `:yank`) read from here instead of
     // recomputing via elementFromPoint.
     var currentPage = 1;
+    var fingerState = null;
     function registerPageTracker() {
         document.addEventListener('pdf2html-page-change', function (e) {
             if (e.detail && e.detail.page) currentPage = e.detail.page;
@@ -212,6 +216,205 @@
     }
 
     // ------------------------------------------------------------------------
+    // Outline selection — a second, temporary target for keyboard navigation in
+    // the sidebar. It stays visually hidden while it matches the current active
+    // chapter; Ctrl-j/k or arrows move it, and Enter activates it.
+    // ------------------------------------------------------------------------
+    function mountOutlineScrollSelection() {
+        var body = document.getElementById('pdf2html-sidebar-body');
+        var outline = document.getElementById('outline');
+        if (!body || !outline) return;
+
+        var links = Array.prototype.slice.call(outline.querySelectorAll('a[href^="#pf"]'));
+        if (!links.length) return;
+
+        var selected = null;
+        var raf = null;
+        var programmaticScrollsToIgnore = 0;
+
+        function outlineVisible() {
+            return document.body.classList.contains('sidebar-shown')
+                && document.body.getAttribute('data-sidebar-tab') === 'outline';
+        }
+
+        function sameTarget(a, b) {
+            if (!a || !b) return false;
+            return a === b || a.getAttribute('href') === b.getAttribute('href');
+        }
+
+        function syncSelectedMarker() {
+            var active = activeLink();
+            for (var i = 0; i < links.length; i++) {
+                links[i].classList.toggle('pdf2html-selected', links[i] === selected && !sameTarget(links[i], active));
+            }
+        }
+
+        function setSelected(link) {
+            if (link === selected) {
+                syncSelectedMarker();
+                return;
+            }
+            selected = link || null;
+            syncSelectedMarker();
+        }
+
+        function activeLink() {
+            return outline.querySelector('a.pdf2html-active[href^="#pf"]');
+        }
+
+        function selectedLink() {
+            return selected || nearestAnchorLink() || activeLink() || links[0] || null;
+        }
+
+        function pageFromLink(link) {
+            var m = link && (link.getAttribute('href') || '').match(/#pf([0-9a-f]+)/i);
+            return m ? parseInt(m[1], 16) : null;
+        }
+
+        function setActiveLink(link) {
+            for (var i = 0; i < links.length; i++) {
+                links[i].classList.toggle('pdf2html-active', links[i] === link);
+            }
+            syncSelectedMarker();
+        }
+
+        function replaceHash(link) {
+            var href = link && link.getAttribute('href');
+            if (!href || href.charAt(0) !== '#') return;
+            try {
+                history.replaceState(null, '', location.pathname + location.search + href);
+            } catch (e) {}
+        }
+
+        function commitSelected() {
+            var link = selected;
+            if (!link) return;
+            var page = pageFromLink(link);
+            var pf = pageElement(page);
+            var pc = document.getElementById('page-container');
+            if (!pf || !pc) return;
+
+            setActiveLink(link);
+            setSelected(null);
+            pc.scrollTop = Math.max(0, pf.offsetTop);
+            replaceHash(link);
+        }
+
+        function scrollLinkToAnchor(link) {
+            if (!link) return;
+            var bodyRect = body.getBoundingClientRect();
+            var linkRect = link.getBoundingClientRect();
+            var anchorY = bodyRect.top + bodyRect.height * 0.35;
+            var linkY = linkRect.top + linkRect.height / 2;
+            var delta = linkY - anchorY;
+            if (Math.abs(delta) > 0.5) programmaticScrollsToIgnore += 1;
+            body.scrollTop += delta;
+        }
+
+        function moveSelected(dir) {
+            var from = selectedLink();
+            if (!from) return;
+            var idx = links.indexOf(from);
+            if (idx < 0) idx = 0;
+            idx = Math.max(0, Math.min(links.length - 1, idx + dir));
+            var next = links[idx];
+            setSelected(next);
+            scrollLinkToAnchor(next);
+        }
+
+        function nearestAnchorLink() {
+            var bodyRect = body.getBoundingClientRect();
+            var anchorY = bodyRect.top + bodyRect.height * 0.35;
+            var best = null;
+            var bestDist = Infinity;
+
+            for (var i = 0; i < links.length; i++) {
+                var r = links[i].getBoundingClientRect();
+                if (r.bottom < bodyRect.top || r.top > bodyRect.bottom) continue;
+                var mid = r.top + r.height / 2;
+                var dist = Math.abs(mid - anchorY);
+                if (dist < bestDist) {
+                    best = links[i];
+                    bestDist = dist;
+                }
+            }
+            return best;
+        }
+
+        function updateFromScroll() {
+            raf = null;
+            if (!outlineVisible()) return;
+            if (programmaticScrollsToIgnore > 0) {
+                programmaticScrollsToIgnore -= 1;
+                syncSelectedMarker();
+                return;
+            }
+            setSelected(nearestAnchorLink());
+        }
+
+        function scheduleFromScroll() {
+            if (raf) return;
+            raf = requestAnimationFrame(updateFromScroll);
+        }
+
+        function syncOnVisibilityChange() {
+            if (!outlineVisible()) return;
+            var active = activeLink();
+            if (active) {
+                setSelected(active);
+                try { active.scrollIntoView({ block: 'nearest' }); } catch (e) {}
+                return;
+            }
+            setSelected(null);
+        }
+
+        for (var i = 0; i < links.length; i++) (function (link) {
+            link.addEventListener('click', function () { setSelected(link); });
+        })(links[i]);
+
+        body.addEventListener('scroll', scheduleFromScroll, { passive: true });
+        new MutationObserver(syncOnVisibilityChange).observe(document.body, {
+            attributes: true,
+            attributeFilter: ['class', 'data-sidebar-tab'],
+        });
+        new MutationObserver(syncSelectedMarker).observe(outline, {
+            attributes: true,
+            attributeFilter: ['class'],
+            subtree: true,
+        });
+
+        window.addEventListener('keydown', function (e) {
+            if (e.metaKey || e.altKey) return;
+            if (isInputTarget(e.target)) return;
+            if (!outlineVisible()) return;
+            if (document.activeElement !== body
+                && document.body.getAttribute('data-scroll-focus') !== 'sidebar') return;
+
+            var ctrlDown = e.ctrlKey && !e.shiftKey && (e.key === 'j' || e.key === 'J');
+            var ctrlUp = e.ctrlKey && !e.shiftKey && (e.key === 'k' || e.key === 'K');
+            var arrowDown = !e.ctrlKey && !e.shiftKey && e.key === 'ArrowDown';
+            var arrowUp = !e.ctrlKey && !e.shiftKey && e.key === 'ArrowUp';
+            if (ctrlDown || ctrlUp || arrowDown || arrowUp) {
+                e.preventDefault();
+                e.stopPropagation();
+                if (e.stopImmediatePropagation) e.stopImmediatePropagation();
+                moveSelected((ctrlDown || arrowDown) ? 1 : -1);
+                return;
+            }
+
+            if (!e.ctrlKey && !e.shiftKey && e.key === 'Enter') {
+                if (!selected) return;
+                e.preventDefault();
+                e.stopPropagation();
+                if (e.stopImmediatePropagation) e.stopImmediatePropagation();
+                commitSelected();
+            }
+        }, true);
+
+        syncOnVisibilityChange();
+    }
+
+    // ------------------------------------------------------------------------
     // Sidebar layout — keep the sidebar fixed on the left, but only translate
     // the PDF pages once the sidebar has exhausted the natural left-side gutter
     // around the centered page. That mirrors native browser side panels more
@@ -336,17 +539,83 @@
                 && document.body.getAttribute('data-sidebar-tab') === 'thumbs';
         }
 
+        var thumbButtons = Array.prototype.slice.call(host.querySelectorAll('.pdf2html-thumb'));
+        var selectedPage = null;
+
+        function thumbPage(thumb) {
+            return thumb ? parseInt(thumb.dataset.page, 10) : NaN;
+        }
+
+        function activeThumbPage() {
+            var active = host.querySelector('.pdf2html-thumb.active');
+            var page = thumbPage(active);
+            return !isNaN(page) ? page : currentPage;
+        }
+
+        function thumbForPage(page) {
+            for (var i = 0; i < thumbButtons.length; i++) {
+                if (thumbPage(thumbButtons[i]) === page) return thumbButtons[i];
+            }
+            return null;
+        }
+
+        function syncSelectedThumbMarker() {
+            var activePage = activeThumbPage();
+            for (var i = 0; i < thumbButtons.length; i++) {
+                var page = thumbPage(thumbButtons[i]);
+                thumbButtons[i].classList.toggle(
+                    'pdf2html-selected',
+                    selectedPage === page && selectedPage !== activePage
+                );
+            }
+        }
+
+        function setSelectedPage(page) {
+            if (!page || page < 1) selectedPage = null;
+            else selectedPage = Math.max(1, Math.min(pages.length, page));
+            syncSelectedThumbMarker();
+        }
+
+        function selectedPageBase() {
+            return selectedPage || activeThumbPage() || currentPage || 1;
+        }
+
+        function moveSelectedPage(delta) {
+            setSelectedPage(selectedPageBase() + delta);
+            var thumb = thumbForPage(selectedPage);
+            if (thumb) {
+                try { thumb.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'auto' }); } catch (e) {}
+            }
+        }
+
+        function replaceHashForPage(page) {
+            try {
+                history.replaceState(null, '', location.pathname + location.search + '#pf' + page.toString(16));
+            } catch (e) {}
+        }
+
+        function commitSelectedPage() {
+            if (!selectedPage) return;
+            var pf = pageElement(selectedPage);
+            if (!pf) return;
+            currentPage = selectedPage;
+            syncThumbState(selectedPage, true);
+            setSelectedPage(null);
+            pc.scrollTop = Math.max(0, pf.offsetTop);
+            replaceHashForPage(currentPage);
+        }
+
         function syncThumbState(page, center) {
             if (!page || page < 1) return;
-            var thumbs = host.querySelectorAll('.pdf2html-thumb');
             var active = null;
-            for (var j = 0; j < thumbs.length; j++) {
-                var on = parseInt(thumbs[j].dataset.page, 10) === page;
-                thumbs[j].classList.toggle('active', on);
-                if (on) thumbs[j].setAttribute('aria-current', 'page');
-                else thumbs[j].removeAttribute('aria-current');
-                if (on) active = thumbs[j];
+            for (var j = 0; j < thumbButtons.length; j++) {
+                var on = thumbPage(thumbButtons[j]) === page;
+                thumbButtons[j].classList.toggle('active', on);
+                if (on) thumbButtons[j].setAttribute('aria-current', 'page');
+                else thumbButtons[j].removeAttribute('aria-current');
+                if (on) active = thumbButtons[j];
             }
+            syncSelectedThumbMarker();
             if (active && center && thumbsTabVisible()) {
                 try { active.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'auto' }); } catch (err) {}
             }
@@ -363,6 +632,34 @@
             attributes: true,
             attributeFilter: ['class', 'data-sidebar-tab'],
         });
+
+        window.addEventListener('keydown', function (e) {
+            if (e.metaKey || e.altKey) return;
+            if (isInputTarget(e.target)) return;
+            if (!thumbsTabVisible()) return;
+            if (document.activeElement !== document.getElementById('pdf2html-sidebar-body')
+                && document.body.getAttribute('data-scroll-focus') !== 'sidebar') return;
+
+            var ctrlDown = e.ctrlKey && !e.shiftKey && (e.key === 'j' || e.key === 'J');
+            var ctrlUp = e.ctrlKey && !e.shiftKey && (e.key === 'k' || e.key === 'K');
+            var arrowDown = !e.ctrlKey && !e.shiftKey && e.key === 'ArrowDown';
+            var arrowUp = !e.ctrlKey && !e.shiftKey && e.key === 'ArrowUp';
+            if (ctrlDown || ctrlUp || arrowDown || arrowUp) {
+                e.preventDefault();
+                e.stopPropagation();
+                if (e.stopImmediatePropagation) e.stopImmediatePropagation();
+                moveSelectedPage((ctrlDown || arrowDown) ? 1 : -1);
+                return;
+            }
+
+            if (!e.ctrlKey && !e.shiftKey && e.key === 'Enter') {
+                if (!selectedPage) return;
+                e.preventDefault();
+                e.stopPropagation();
+                if (e.stopImmediatePropagation) e.stopImmediatePropagation();
+                commitSelectedPage();
+            }
+        }, true);
 
         syncThumbState(currentPage, false);
     }
@@ -685,6 +982,7 @@
                 && !e.metaKey && !e.ctrlKey && !e.altKey
                 && document.body.classList.contains('sidebar-shown')
                 && !document.getElementById('pdf2html-palette')
+                && !document.getElementById('pdf2html-finder')
                 && !document.getElementById('pdf2html-settings')
                 && !document.getElementById('pdf2html-cheatsheet')) {
                 e.preventDefault();
@@ -848,8 +1146,11 @@
     function registerEscapeHandler() {
         document.addEventListener('keydown', function (e) {
             if (e.key !== 'Escape') return;
+            var fnd = document.getElementById('pdf2html-finder');
+            if (fnd) { e.preventDefault(); e.stopPropagation(); fnd.remove(); return; }
             var pal = document.getElementById('pdf2html-palette');
             if (pal) { e.preventDefault(); e.stopPropagation(); pal.remove(); return; }
+            if (fingerState) { e.preventDefault(); e.stopPropagation(); closeFingerMode(); return; }
             if (isInputTarget(e.target)) return;
             var settings = document.getElementById('pdf2html-settings');
             if (settings) { settings.remove(); return; }
@@ -924,6 +1225,7 @@
                     + '<h3>Viewer</h3>'
                     + kRow([['⌘','.'], ['⌘','B']], 'Toggle sidebar')
                     + kRow([['Tab']], 'Sidebar open: toggle j/k focus between sidebar and main PDF')
+                    + kRow([['Ctrl','J'], ['Ctrl','K'], ['↓'], ['↑']], 'Sidebar: move Outline / Pages selector')
                     + kRow([['←','h'], ['→','l']], 'Sidebar: Outline / Pages tab (when open)')
                     + kRow([['A']], 'Toggle render-all pages')
                     + kRow([['e'], ['q'], ['E']], 'Next / prev page; active text selection extends pagewise instead')
@@ -933,7 +1235,9 @@
                     + kRow([[':']], 'Command palette (Tab / ^J / ^K to cycle)')
                     + kRow([['⌘','K']], 'Quick-open another cached doc')
                     + kRow([['⌘',',']], 'Open settings')
+                    + kRow([['Ctrl','f']], 'Finger visible tokens; hint copies token')
                     + kRow([['/'], ['s']], 'Find in visible pages (Enter to jump, n/N to cycle)')
+                    + kRow([[':','f']], 'Finger visible tokens; hint copies token')
                     + kRow([['?']], 'Toggle this cheatsheet')
                     + kRow([['Esc']], 'Close overlay / clear selection')
                     + '<h3>Vimium (external)</h3>'
@@ -962,6 +1266,7 @@
                     + cRow(':buffer N', ':buf', 'Render ±N pages around viewport')
                     + cRow(':all', '—', 'Toggle render-all pages')
                     + cRow(':yank <kind>', ':y', 'Copy ref / page / chapter / document')
+                    + cRow(':finger', ':f', 'Hint visible URL / DOI / ISBN / ID tokens')
                     + cRow(':counter', ':num', 'Toggle page counter')
                     + cRow(':zoom N', '—', 'Set page-container zoom')
                     + cRow(':help', ':h', 'Open this cheatsheet')
@@ -1004,9 +1309,10 @@
     }
 
     // Library — list of all cached docs for `:open`. Daemon returns the
-    // full set sorted recency-first; we cache once per page load. Completers
-    // are synchronous so if the fetch hasn't resolved yet the user sees an
-    // empty list (retry by typing or reopening the palette a beat later).
+    // full set sorted by zoxide-style frecency. The palette filters that
+    // ordered corpus without letting text-match score reorder it.
+    var OPEN_COMPLETION_LIMIT = 30;
+    var currentLibraryHash = entryHash();
     var libraryEntries = null;
     function loadLibrary() {
         if (libraryEntries !== null) return;
@@ -1019,14 +1325,55 @@
     // Relative age label ("3h", "2d", "12m"). Returns '' when we have no
     // visit record yet.
     function recencyLabel(entry) {
-        if (!entry || !entry.last_seen) return entry && entry.count ? entry.count + 'x' : '';
+        var n = entry && entry.rank != null ? entry.rank : (entry && entry.count);
+        if (!entry || !entry.last_seen) return n ? n + 'x' : '';
         var ageSec = (Date.now() / 1000) - entry.last_seen;
         var ago;
         if (ageSec < 60) ago = 'now';
         else if (ageSec < 3600) ago = Math.round(ageSec / 60) + 'm';
         else if (ageSec < 86400) ago = Math.round(ageSec / 3600) + 'h';
         else ago = Math.round(ageSec / 86400) + 'd';
-        return entry.count + 'x · ' + ago;
+        return n + 'x · ' + ago;
+    }
+
+    function normalizeOpenQuery(s) {
+        return String(s || '').toLowerCase().replace(/\s+/g, ' ').trim();
+    }
+
+    function librarySearchText(entry) {
+        if (!entry) return '';
+        if (entry.search_text) return normalizeOpenQuery(entry.search_text);
+        return normalizeOpenQuery([entry.name, entry.source_ref].filter(Boolean).join(' '));
+    }
+
+    function libraryEntryMatches(entry, query) {
+        var q = normalizeOpenQuery(query);
+        if (!q) return true;
+        var text = librarySearchText(entry);
+        var tokens = q.split(' ');
+        for (var i = 0; i < tokens.length; i++) {
+            if (text.indexOf(tokens[i]) === -1) return false;
+        }
+        return true;
+    }
+
+    function isCurrentLibraryEntry(entry) {
+        return !!(currentLibraryHash && entry && entry.hash === currentLibraryHash);
+    }
+
+    function completeLibraryEntries(tail) {
+        if (!libraryEntries) return [];
+        var out = [];
+        for (var i = 0; i < libraryEntries.length; i++) {
+            var e = libraryEntries[i];
+            if (isCurrentLibraryEntry(e)) continue;
+            if (!libraryEntryMatches(e, tail)) continue;
+            out.push(e);
+            if (out.length >= OPEN_COMPLETION_LIMIT) break;
+        }
+        // Daemon sends best-first. Reverse only the rendered window so the
+        // best match sits at the BOTTOM of the wildmenu, closest to the caret.
+        return out.reverse();
     }
 
     function openLibraryEntry(needle) {
@@ -1034,11 +1381,12 @@
         var n = needle.toLowerCase().trim();
         var exact = null, sub = null;
         for (var i = 0; i < libraryEntries.length; i++) {
+            if (isCurrentLibraryEntry(libraryEntries[i])) continue;
             var name = (libraryEntries[i].name || '').toLowerCase();
             if (name === n) { exact = libraryEntries[i]; break; }
             if (!sub && name.indexOf(n) !== -1) sub = libraryEntries[i];
         }
-        var pick = exact || sub;
+        var pick = exact || sub || completeLibraryEntries(needle).slice(-1)[0];
         if (pick && pick.href) location.href = pick.href;
     }
 
@@ -1167,6 +1515,7 @@
 
     var COMMANDS = [
         { name: 'page',    aliases: ['p'],    desc: 'goto page N',
+          requiresArg: true,
           argCompleter: null,
           handler: function (a) { if (a) gotoPage(parseInt(a, 10)); } },
         { name: 'chapter', aliases: [],       desc: 'goto chapter by name',
@@ -1286,6 +1635,9 @@
               });
           },
           handler: function (a) { dispatchYank(a); } },
+        { name: 'finger',  aliases: ['f'],    desc: 'hint visible URL/DOI/ISBN/ID tokens',
+          argCompleter: null,
+          handler: function () { openFingerMode(); } },
         { name: 'counter', aliases: ['num'],
           desc: function () {
               return (document.body.classList.contains('pageno-hidden') ? 'show' : 'hide') + ' page counter';
@@ -1315,17 +1667,7 @@
           handler: function (a) { if (a !== undefined && window.__pdf2htmlSetZoom) window.__pdf2htmlSetZoom(parseFloat(a)); } },
         { name: 'open',    aliases: ['o'],    desc: 'open another cached doc',
           argCompleter: function (tail) {
-              if (!libraryEntries) return [];
-              var lt = String(tail || '').toLowerCase().trim();
-              var matched = lt
-                  ? libraryEntries.filter(function (e) {
-                        return (e.name || '').toLowerCase().indexOf(lt) !== -1;
-                    })
-                  : libraryEntries.slice(0, 30);
-              // Daemon sorts recency-first. Reverse so the most recent doc
-              // sits at the BOTTOM of the wildmenu — closest to the caret,
-              // same priority-near-input convention as :mark/:jump.
-              matched = matched.slice().reverse();
+              var matched = completeLibraryEntries(tail);
               return matched.map(function (e) {
                   return {
                       value: 'open ' + e.name,
@@ -1345,11 +1687,16 @@
     ];
 
     function findCommand(name) {
-        var n = name.toLowerCase();
+        if (name == null) return null;
+        var n = String(name).toLowerCase();
         for (var i = 0; i < COMMANDS.length; i++) {
             if (COMMANDS[i].name === n || COMMANDS[i].aliases.indexOf(n) !== -1) return COMMANDS[i];
         }
         return null;
+    }
+
+    function commandTakesArg(cmd) {
+        return !!(cmd && (cmd.argCompleter || cmd.requiresArg));
     }
 
     function openPalette() {
@@ -1392,10 +1739,11 @@
             if (firstSpace === -1) {
                 // Command-name completion — match canonical OR any alias.
                 // The wildmenu displays name + alias + desc, so carry all three.
+                var commandNeedle = v.toLowerCase();
                 state.matches = COMMANDS
                     .filter(function (c) {
-                        if (c.name.indexOf(v) === 0) return true;
-                        return c.aliases.some(function (a) { return a.indexOf(v) === 0; });
+                        if (c.name.indexOf(commandNeedle) === 0) return true;
+                        return c.aliases.some(function (a) { return a.indexOf(commandNeedle) === 0; });
                     })
                     .map(function (c) {
                         return {
@@ -1476,9 +1824,7 @@
                 // Mousedown (not click) so we fire before the input loses focus.
                 row.addEventListener('mousedown', function (ev) {
                     ev.preventDefault();
-                    input.value = m.value;
-                    runCommand(input.value);
-                    wrap.remove();
+                    acceptMatchOrRun(m);
                 });
                 completeRow.appendChild(row);
             });
@@ -1488,6 +1834,22 @@
             }
         }
 
+        function expandCommandMatch(match) {
+            if (!match || input.value.indexOf(' ') !== -1) return false;
+            var cmd = findCommand(match.value);
+            if (!commandTakesArg(cmd)) return false;
+            input.value = cmd.name + ' ';
+            computeMatches(); renderMatches();
+            return true;
+        }
+
+        function acceptMatchOrRun(match) {
+            if (expandCommandMatch(match)) return;
+            input.value = match && match.value != null ? match.value : input.value;
+            runCommand(input.value);
+            wrap.remove();
+        }
+
         function cycleMatch(delta) {
             if (state.matches.length === 0) return;
             // Tab on an unambiguous command completion (single match, no
@@ -1495,13 +1857,7 @@
             // then Space" two-step once there's only one command it could
             // be. Multi-match cycling still uses Space/Enter to commit.
             if (state.matches.length === 1 && input.value.indexOf(' ') === -1) {
-                var only = state.matches[0];
-                var cmd = findCommand(only.value);
-                if (cmd && cmd.argCompleter) {
-                    input.value = only.value + ' ';
-                    computeMatches(); renderMatches();
-                    return;
-                }
+                if (expandCommandMatch(state.matches[0])) return;
             }
             var n = state.matches.length;
             state.idx = ((state.idx + delta) % n + n) % n;
@@ -1522,11 +1878,8 @@
                 // Tab-cycled), run *that* — so typing a prefix + Enter
                 // expands to the full command. Fall back to the raw input
                 // when there's no match (bare `:42`, no-completion args).
-                var run = (state.idx >= 0 && state.matches[state.idx])
-                    ? state.matches[state.idx].value
-                    : input.value;
-                runCommand(run);
-                wrap.remove();
+                var match = state.idx >= 0 ? state.matches[state.idx] : null;
+                acceptMatchOrRun(match);
             } else if (ev.key === 'Tab') {
                 ev.preventDefault(); cycleMatch(ev.shiftKey ? -1 : 1);
             } else if (ev.ctrlKey && !ev.metaKey && !ev.altKey
@@ -1777,7 +2130,7 @@
             if (o > bestO) { bestO = o; bestIdx = i; }
         }
         var text = (chapter ? chapter + ' · ' : '') + 'p. ' + (bestIdx + 1);
-        if (navigator.clipboard) navigator.clipboard.writeText(text);
+        writeClip(text);
     }
 
     // Text extraction — yanks actual content for notes / quoting workflow.
@@ -1821,7 +2174,56 @@
     }
 
     function writeClip(text) {
-        if (text && navigator.clipboard) navigator.clipboard.writeText(text);
+        if (!text) return Promise.resolve(false);
+        var value = String(text);
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            try {
+                return navigator.clipboard.writeText(value).then(function () {
+                    return true;
+                }, function () {
+                    return fallbackWriteClip(value);
+                });
+            } catch (e) {
+                return Promise.resolve(fallbackWriteClip(value));
+            }
+        }
+        return Promise.resolve(fallbackWriteClip(value));
+    }
+
+    function fallbackWriteClip(text) {
+        var ta = document.createElement('textarea');
+        var active = document.activeElement;
+        var selection = window.getSelection ? window.getSelection() : null;
+        var ranges = [];
+        try {
+            if (selection) {
+                for (var i = 0; i < selection.rangeCount; i++) {
+                    ranges.push(selection.getRangeAt(i).cloneRange());
+                }
+            }
+            ta.value = text;
+            ta.setAttribute('readonly', '');
+            ta.style.position = 'fixed';
+            ta.style.left = '-9999px';
+            ta.style.top = '0';
+            document.body.appendChild(ta);
+            ta.select();
+            ta.setSelectionRange(0, ta.value.length);
+            return !!document.execCommand && document.execCommand('copy');
+        } catch (e) {
+            return false;
+        } finally {
+            if (ta.parentElement) ta.remove();
+            if (selection) {
+                try {
+                    selection.removeAllRanges();
+                    ranges.forEach(function (r) { selection.addRange(r); });
+                } catch (e) {}
+            }
+            if (active && active.focus) {
+                try { active.focus({ preventScroll: true }); } catch (e) {}
+            }
+        }
     }
 
     function yankPage() {
@@ -1850,6 +2252,409 @@
         else                                  yankCurrentLocation();  // ref (default)
     }
 
+    // ------------------------------------------------------------------------
+    // Finger mode — tmux-fingers-style token picker for the visible viewport.
+    //
+    // V1 deliberately stays local: it scans only visible rendered page frames
+    // and only structured tokens. Hints use keys that already pass through
+    // Vimium on localhost (e/s/q/c/h/l/n), so the mode works without extending
+    // Vimium's exclusion list. The pdf2htmlEX text DOM remains untouched:
+    // targets are painted through CSS Custom Highlights, while hint labels live
+    // in a fixed overlay layer backed by original browser Ranges for copy.
+    // ------------------------------------------------------------------------
+    var FINGER_ALPHABET = 'esqchln'.split('');
+    var FINGER_HIGHLIGHTS = [
+        'pdf2html-finger-url',
+        'pdf2html-finger-doi',
+        'pdf2html-finger-isbn',
+        'pdf2html-finger-id',
+    ];
+    var FINGER_PATTERNS = [
+        {
+            kind: 'url',
+            priority: 0,
+            re: /\b(?:https?:\/\/|www\.)[^\s<>"'`]+/gi,
+        },
+        {
+            kind: 'doi',
+            priority: 1,
+            re: /\b(?:doi:\s*)?10\.\d{4,9}\/[-._;()/:A-Z0-9]+/gi,
+        },
+        {
+            kind: 'isbn',
+            priority: 2,
+            re: /\bISBN(?:-1[03])?:?\s*(?:97[89][-\s]?)?\d(?:[-\s]?\d){8,12}[-\s]?[0-9X]\b|\b97[89](?:[-\s]?\d){10}\b/gi,
+        },
+        {
+            kind: 'id',
+            priority: 3,
+            re: /\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b/gi,
+        },
+        {
+            kind: 'id',
+            priority: 4,
+            re: /\b[0-9a-f]{7,64}\b/gi,
+        },
+        {
+            kind: 'id',
+            priority: 5,
+            re: /\b\d{6,}\b/g,
+        },
+    ];
+
+    function openFingerMode() {
+        if (fingerState) { closeFingerMode(); return; }
+        closeSearch();
+        clearFingerHighlights();
+        var stale = document.getElementById('pdf2html-fingers');
+        if (stale) stale.remove();
+        document.body.classList.remove('pdf2html-fingers-active');
+
+        var targets = collectFingerTargets();
+        if (!targets.length) return;
+
+        assignFingerHints(targets);
+        var root = document.createElement('div');
+        root.id = 'pdf2html-fingers';
+        root.setAttribute('aria-hidden', 'true');
+        document.body.appendChild(root);
+
+        targets.forEach(function (target, idx) {
+            target.id = idx;
+            target.nodes = [];
+
+            var first = target.rects[0];
+            var label = document.createElement('div');
+            label.className = 'pdf2html-finger-label';
+            label.dataset.kind = target.kind;
+            label.dataset.hint = target.hint;
+            label.textContent = target.hint;
+            label.style.left = first.left + 'px';
+            label.style.top = (first.top + first.height / 2) + 'px';
+            styleFingerLabel(label, first);
+            root.appendChild(label);
+            target.nodes.push(label);
+        });
+
+        var pc = document.getElementById('page-container');
+        fingerState = {
+            prefix: '',
+            root: root,
+            targets: targets,
+            keydown: handleFingerKeydown,
+            closeOnScroll: function () { closeFingerMode(); },
+            closeOnGeometryChange: function () { closeFingerMode(); },
+        };
+        document.body.classList.add('pdf2html-fingers-active');
+        window.addEventListener('keydown', fingerState.keydown, true);
+        window.addEventListener('resize', fingerState.closeOnGeometryChange);
+        if (window.visualViewport) {
+            window.visualViewport.addEventListener('resize', fingerState.closeOnGeometryChange);
+            window.visualViewport.addEventListener('scroll', fingerState.closeOnGeometryChange);
+        }
+        if (pc) pc.addEventListener('scroll', fingerState.closeOnScroll, { passive: true });
+        updateFingerPrefix();
+    }
+
+    function closeFingerMode() {
+        if (!fingerState) return;
+        var state = fingerState;
+        var pc = document.getElementById('page-container');
+        fingerState = null;
+        window.removeEventListener('keydown', state.keydown, true);
+        window.removeEventListener('resize', state.closeOnGeometryChange);
+        if (window.visualViewport) {
+            window.visualViewport.removeEventListener('resize', state.closeOnGeometryChange);
+            window.visualViewport.removeEventListener('scroll', state.closeOnGeometryChange);
+        }
+        if (pc) pc.removeEventListener('scroll', state.closeOnScroll);
+        if (state.root && state.root.parentElement) state.root.remove();
+        document.body.classList.remove('pdf2html-fingers-active');
+        clearFingerHighlights();
+    }
+
+    function handleFingerKeydown(e) {
+        if (!fingerState) return;
+        if (e.key === 'Escape') {
+            e.preventDefault(); e.stopImmediatePropagation();
+            closeFingerMode();
+            return;
+        }
+        if (e.key === 'Backspace') {
+            e.preventDefault(); e.stopImmediatePropagation();
+            fingerState.prefix = fingerState.prefix.slice(0, -1);
+            updateFingerPrefix();
+            return;
+        }
+        if (e.metaKey || e.ctrlKey || e.altKey) return;
+        var key = String(e.key || '').toLowerCase();
+        if (FINGER_ALPHABET.indexOf(key) === -1) return;
+
+        e.preventDefault(); e.stopImmediatePropagation();
+        var next = fingerState.prefix + key;
+        var matches = fingerState.targets.filter(function (t) {
+            return t.hint.indexOf(next) === 0;
+        });
+        if (!matches.length) return;
+
+        fingerState.prefix = next;
+        var exact = null;
+        for (var i = 0; i < matches.length; i++) {
+            if (matches[i].hint === next) { exact = matches[i]; break; }
+        }
+        if (exact) {
+            writeClip(exact.text);
+            closeFingerMode();
+        } else {
+            updateFingerPrefix();
+        }
+    }
+
+    function updateFingerPrefix() {
+        if (!fingerState) return;
+        var prefix = fingerState.prefix;
+        fingerState.root.dataset.prefix = prefix;
+        fingerState.targets.forEach(function (target) {
+            var match = !prefix || target.hint.indexOf(prefix) === 0;
+            var exact = !!prefix && target.hint === prefix;
+            target.nodes.forEach(function (node) {
+                node.classList.toggle('pdf2html-finger-hidden', !match);
+                node.classList.toggle('pdf2html-finger-exact', exact);
+                node.classList.toggle('pdf2html-finger-prefixed', !!prefix && match);
+            });
+        });
+        updateFingerHighlights(prefix);
+    }
+
+    function styleFingerLabel(label, rect) {
+        var size = Math.max(16, Math.min(26, rect.height * 0.95));
+        label.style.setProperty('--pdf2html-finger-size', size.toFixed(1) + 'px');
+    }
+
+    function updateFingerHighlights(prefix) {
+        if (!fingerState) return;
+        if (!window.CSS || !CSS.highlights || typeof Highlight === 'undefined') return;
+        var groups = {
+            url: new Highlight(),
+            doi: new Highlight(),
+            isbn: new Highlight(),
+            id: new Highlight(),
+        };
+        fingerState.targets.forEach(function (target) {
+            if (prefix && target.hint.indexOf(prefix) !== 0) return;
+            try {
+                groups[target.kind].add(target.range);
+            } catch (e) {
+                // Detached range after a render-window update; ignore until the
+                // mode closes on scroll/resize.
+            }
+        });
+        try {
+            CSS.highlights.set('pdf2html-finger-url', groups.url);
+            CSS.highlights.set('pdf2html-finger-doi', groups.doi);
+            CSS.highlights.set('pdf2html-finger-isbn', groups.isbn);
+            CSS.highlights.set('pdf2html-finger-id', groups.id);
+        } catch (e) { /* Highlight API unavailable or rejected a stale range. */ }
+    }
+
+    function clearFingerHighlights() {
+        if (!window.CSS || !CSS.highlights) return;
+        try {
+            FINGER_HIGHLIGHTS.forEach(function (name) { CSS.highlights.delete(name); });
+        } catch (e) { /* no-op */ }
+    }
+
+    function collectFingerTargets() {
+        var pages = visiblePageFrames();
+        if (!pages.length) return [];
+        var candidates = [];
+        var scopeId = 0;
+        var order = 0;
+        var pc = document.getElementById('page-container');
+        var viewport = pc ? pc.getBoundingClientRect() : null;
+        if (!viewport) return [];
+
+        pages.forEach(function (pf) {
+            var content = pf.querySelector('.pc');
+            if (!content) return;
+            var lines = content.querySelectorAll('.t');
+            if (!lines.length) lines = [content];
+
+            for (var i = 0; i < lines.length; i++) {
+                var run = textRunForFinger(lines[i]);
+                if (!run || !run.text.trim()) continue;
+                var thisScope = scopeId++;
+                collectFingerCandidatesForRun(run, thisScope, order, viewport, candidates);
+                order += 1;
+            }
+        });
+
+        return suppressFingerOverlaps(candidates).sort(function (a, b) {
+            return (a.rects[0].top - b.rects[0].top)
+                || (a.rects[0].left - b.rects[0].left)
+                || (a.order - b.order);
+        });
+    }
+
+    function textRunForFinger(root) {
+        var walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+        var text = '';
+        var segments = [];
+        var node;
+        while ((node = walker.nextNode())) {
+            var value = node.nodeValue || '';
+            if (!value) continue;
+            var start = text.length;
+            text += value;
+            segments.push({ node: node, start: start, end: text.length });
+        }
+        return segments.length ? { text: text, segments: segments } : null;
+    }
+
+    function collectFingerCandidatesForRun(run, scopeId, order, viewport, out) {
+        FINGER_PATTERNS.forEach(function (pat) {
+            pat.re.lastIndex = 0;
+            var m;
+            while ((m = pat.re.exec(run.text))) {
+                if (!m[0]) {
+                    pat.re.lastIndex += 1;
+                    continue;
+                }
+                var bounds = cleanFingerBounds(run.text, m.index, m.index + m[0].length, pat.kind);
+                if (bounds.end <= bounds.start) continue;
+                var range = rangeForFingerRun(run, bounds.start, bounds.end);
+                if (!range) continue;
+                var rects = visibleFingerRects(range, viewport);
+                if (!rects.length) continue;
+                out.push({
+                    kind: pat.kind,
+                    priority: pat.priority,
+                    text: run.text.slice(bounds.start, bounds.end),
+                    range: range,
+                    rects: rects,
+                    scopeId: scopeId,
+                    start: bounds.start,
+                    end: bounds.end,
+                    order: order,
+                });
+            }
+        });
+    }
+
+    function cleanFingerBounds(text, start, end, kind) {
+        while (end > start && /[.,;:]$/.test(text.slice(start, end))) end -= 1;
+        if (kind === 'url') {
+            while (end > start && /[)\]}]$/.test(text.slice(start, end))
+                   && !hasMatchingFingerOpener(text.slice(start, end))) {
+                end -= 1;
+            }
+        }
+        return { start: start, end: end };
+    }
+
+    function hasMatchingFingerOpener(s) {
+        var close = s.charAt(s.length - 1);
+        var open = close === ')' ? '(' : (close === ']' ? '[' : '{');
+        return s.indexOf(open) !== -1;
+    }
+
+    function rangeForFingerRun(run, start, end) {
+        var a = fingerPositionForOffset(run, start, false);
+        var b = fingerPositionForOffset(run, end, true);
+        if (!a || !b) return null;
+        var range = document.createRange();
+        try {
+            range.setStart(a.node, a.offset);
+            range.setEnd(b.node, b.offset);
+            return range;
+        } catch (e) {
+            return null;
+        }
+    }
+
+    function fingerPositionForOffset(run, offset, isEnd) {
+        if (!run.segments.length) return null;
+        for (var i = 0; i < run.segments.length; i++) {
+            var seg = run.segments[i];
+            if (isEnd) {
+                if (offset >= seg.start && offset <= seg.end) {
+                    return { node: seg.node, offset: offset - seg.start };
+                }
+            } else if (offset >= seg.start && offset < seg.end) {
+                return { node: seg.node, offset: offset - seg.start };
+            }
+        }
+        var last = run.segments[run.segments.length - 1];
+        if (isEnd && offset === last.end) {
+            return { node: last.node, offset: last.end - last.start };
+        }
+        return null;
+    }
+
+    function visibleFingerRects(range, viewport) {
+        var out = [];
+        var rects = range.getClientRects();
+        for (var i = 0; i < rects.length; i++) {
+            var r = rects[i];
+            var left = Math.max(r.left, viewport.left);
+            var top = Math.max(r.top, viewport.top);
+            var right = Math.min(r.right, viewport.right);
+            var bottom = Math.min(r.bottom, viewport.bottom);
+            var width = right - left;
+            var height = bottom - top;
+            if (width < 1 || height < 1) continue;
+            out.push({ left: left, top: top, width: width, height: height });
+        }
+        return out;
+    }
+
+    function suppressFingerOverlaps(candidates) {
+        candidates.sort(function (a, b) {
+            return (a.priority - b.priority)
+                || (a.scopeId - b.scopeId)
+                || (a.start - b.start)
+                || (a.end - b.end);
+        });
+        var accepted = [];
+        candidates.forEach(function (cand) {
+            for (var i = 0; i < accepted.length; i++) {
+                var prev = accepted[i];
+                if (prev.scopeId !== cand.scopeId) continue;
+                if (cand.start < prev.end && cand.end > prev.start) return;
+            }
+            accepted.push(cand);
+        });
+        return accepted;
+    }
+
+    function assignFingerHints(targets) {
+        var hints = generateFingerHints(targets.length);
+        for (var i = 0; i < targets.length; i++) targets[i].hint = hints[i];
+    }
+
+    function generateFingerHints(n) {
+        var base = FINGER_ALPHABET.length;
+        var len = 1;
+        var cap = base;
+        while (cap < n) {
+            len += 1;
+            cap *= base;
+        }
+        var out = [];
+        for (var i = 0; i < n; i++) out.push(fingerHintForIndex(i, len));
+        return out;
+    }
+
+    function fingerHintForIndex(index, len) {
+        var base = FINGER_ALPHABET.length;
+        var chars = new Array(len);
+        for (var pos = len - 1; pos >= 0; pos--) {
+            chars[pos] = FINGER_ALPHABET[index % base];
+            index = Math.floor(index / base);
+        }
+        return chars.join('');
+    }
+
     function registerPaletteHandler() {
         document.addEventListener('keydown', function (e) {
             if (e.key !== ':') return;
@@ -1859,22 +2664,507 @@
         }, true);
     }
 
-    // ⌘K — jump straight to the library picker. Bypasses isInputTarget so it
-    // works from any focus state (Raycast-style quick-open expectation).
+    function registerFingerShortcutHandler() {
+        window.addEventListener('keydown', function (e) {
+            if (!e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
+            if (String(e.key || '').toLowerCase() !== 'f') return;
+            if (isInputTarget(e.target)) return;
+            if (fingerShortcutBlockedByOverlay()) return;
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            openFingerMode();
+        }, true);
+    }
+
+    function fingerShortcutBlockedByOverlay() {
+        return !!(document.getElementById('pdf2html-palette')
+            || document.getElementById('pdf2html-finder')
+            || document.getElementById('pdf2html-settings')
+            || document.getElementById('pdf2html-cheatsheet'));
+    }
+
+    // ------------------------------------------------------------------------
+    // Cmd-K Finder — centered, pretty quick-jump dropdown. Groups candidates
+    // from the current document's outline, the cached library, and the
+    // palette COMMANDS into one searchable list. Sibling to openPalette()
+    // (:) rather than replacing it: : stays vim ex-bar; ⌘K opens this.
+    // ------------------------------------------------------------------------
+
+    function closeFinder() {
+        var ex = document.getElementById('pdf2html-finder');
+        if (ex) ex.remove();
+    }
+
+    // SVG atoms — trimmed to just what the row icons need.
+    function finderSvg(kind) {
+        var attrs = 'width="12" height="12" viewBox="0 0 24 24" fill="none" '
+                  + 'stroke="currentColor" stroke-width="1.75" '
+                  + 'stroke-linecap="round" stroke-linejoin="round"';
+        if (kind === 'doc') {
+            return '<svg ' + attrs + '>'
+                + '<path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/>'
+                + '<path d="M14 3v6h6"/></svg>';
+        }
+        if (kind === 'book') {
+            return '<svg ' + attrs + '>'
+                + '<rect x="3" y="5" width="4" height="14"/>'
+                + '<rect x="9" y="3" width="4" height="16"/>'
+                + '<path d="M15 7l3.5-1 3 11-3.5 1z"/></svg>';
+        }
+        if (kind === 'cmd') {
+            return '<svg ' + attrs + '>'
+                + '<path d="M5 8l4 4-4 4M12 16h7"/></svg>';
+        }
+        return '';
+    }
+
+    // Try to split a chapter label into a leading section number and title.
+    // "3.2 Self-organization" → { num: "3.2", title: "Self-organization" }
+    // If there's no number, returns { num: "", title: label }.
+    function finderParseChapter(label) {
+        var m = String(label || '').match(/^\s*([0-9]+(?:\.[0-9]+)*|[A-Z])\s+(.*)$/);
+        if (m) return { num: m[1], title: m[2].trim() };
+        return { num: '', title: String(label || '').trim() };
+    }
+
+    // Derive a human title from a path/URL when the daemon didn't supply
+    // a name. Strips the extension so "/Users/x/Foo-Bar.pdf" → "Foo-Bar".
+    // URL-decodes percent-encoded segments so %20 doesn't leak into the UI.
+    function finderDeriveTitle(ref) {
+        var s = String(ref || '').trim();
+        if (!s) return '';
+        // Drop query string + trailing slashes.
+        s = s.replace(/[?#].*$/, '').replace(/\/+$/, '');
+        var tail = s.split('/').pop() || s;
+        try { tail = decodeURIComponent(tail); } catch (_) {}
+        return tail.replace(/\.(pdf|html?|xml)$/i, '');
+    }
+
+    // Middle-ellipsis truncation: "/a/really/long/path/to/file.pdf" →
+    // "/a/really/…/path/to/file.pdf". Preserves the trailing filename — the
+    // most identifying part of a path — and drops the middle directories.
+    // Guards against absurd `max` values so we never build a negative slice.
+    function finderMiddleEllipsis(s, max) {
+        var str = String(s || '');
+        var m = Math.max(4, max | 0);
+        if (str.length <= m) return str;
+        var keep = m - 1; // room for the ellipsis
+        var head = Math.max(1, Math.ceil(keep * 0.35));
+        var tail = Math.max(1, keep - head);
+        return str.slice(0, head) + '…' + str.slice(str.length - tail);
+    }
+
+    // Build the full flat-with-groups candidate list once per open. Each
+    // candidate is { group, icon, label, meta, searchText, run }.
+    function buildFinderCandidates() {
+        var out = [];
+
+        // --- Outline (this document) ---
+        var chaps = getChapters();
+        for (var i = 0; i < chaps.length; i++) {
+            var c = chaps[i];
+            var parts = finderParseChapter(c.label);
+            var num = parts.num;
+            var title = parts.title;
+            var metaBits = [];
+            if (num) metaBits.push('§ ' + num);
+            metaBits.push('p. ' + c.page);
+            out.push({
+                scope: 'outline',
+                group: 'Outline · this document',
+                icon: num ? { kind: 'text', text: num } : { kind: 'text', text: '§' },
+                label: title,
+                meta: metaBits.join('  ·  '),
+                searchText: (num + ' ' + title + ' ' + c.label).toLowerCase(),
+                run: (function (page) { return function () { gotoPage(page); }; })(c.page),
+            });
+        }
+
+        // --- Other documents (library) ---
+        if (libraryEntries && libraryEntries.length) {
+            for (var j = 0; j < libraryEntries.length; j++) {
+                var e = libraryEntries[j];
+                if (isCurrentLibraryEntry(e)) continue;
+                var libLabel = String(e.name || '').trim();
+                if (!libLabel) libLabel = finderDeriveTitle(e.source_ref) || '(untitled)';
+                var bits = [];
+                if (e.source_ref) bits.push(finderMiddleEllipsis(e.source_ref, 44));
+                if (e.pages) bits.push(e.pages + ' pp');
+                var rec = recencyLabel(e);
+                if (rec) bits.push(rec);
+                out.push({
+                    scope: 'files',
+                    group: 'Other documents',
+                    icon: { kind: 'svg', svg: finderSvg('book') },
+                    label: libLabel,
+                    meta: bits.join('  ·  '),
+                    searchText: librarySearchText(e),
+                    run: (function (href) { return function () { if (href) location.href = href; }; })(e.href),
+                });
+            }
+        }
+
+        // --- Commands ---
+        for (var k = 0; k < COMMANDS.length; k++) {
+            var cmd = COMMANDS[k];
+            var desc = typeof cmd.desc === 'function' ? cmd.desc() : (cmd.desc || '');
+            var alias = cmd.aliases && cmd.aliases[0] ? cmd.aliases[0] : '';
+            out.push({
+                scope: 'commands',
+                group: 'Commands',
+                icon: { kind: 'svg', svg: finderSvg('cmd') },
+                label: ':' + cmd.name + (alias ? '  ' : ''),
+                labelAlias: alias ? ':' + alias : '',
+                meta: desc,
+                searchText: (cmd.name + ' ' + (cmd.aliases || []).join(' ') + ' ' + desc).toLowerCase(),
+                // Commands that take args shouldn't fire bare — expand into the
+                // ex-bar palette so the user can supply an argument. Zero-arg
+                // commands run straight through.
+                run: (function (c) {
+                    return function () {
+                        if (commandTakesArg(c)) {
+                            openPalette();
+                            var inp = document.getElementById('pdf2html-palette-input');
+                            if (inp) {
+                                inp.value = c.name + ' ';
+                                inp.dispatchEvent(new Event('input'));
+                                inp.selectionStart = inp.selectionEnd = inp.value.length;
+                            }
+                        } else {
+                            c.handler();
+                        }
+                    };
+                })(cmd),
+            });
+        }
+
+        return out;
+    }
+
+    // Case-insensitive substring filter; also builds match highlight ranges
+    // over the label so we can show which chars hit.
+    function finderFilter(candidates, query) {
+        var q = String(query || '').trim().toLowerCase();
+        if (!q) return candidates.map(function (c) { return { cand: c, hit: null }; });
+        var out = [];
+        for (var i = 0; i < candidates.length; i++) {
+            var c = candidates[i];
+            if (c.searchText.indexOf(q) === -1) continue;
+            var labelLc = String(c.label || '').toLowerCase();
+            var idx = labelLc.indexOf(q);
+            out.push({ cand: c, hit: idx >= 0 ? { start: idx, end: idx + q.length } : null });
+        }
+        return out;
+    }
+
+    function escapeFinderHtml(s) {
+        return String(s || '')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;');
+    }
+
+    function renderFinderLabel(cand, hit) {
+        var label = String(cand.label || '');
+        var html;
+        if (hit) {
+            html = escapeFinderHtml(label.slice(0, hit.start))
+                 + '<span class="match">' + escapeFinderHtml(label.slice(hit.start, hit.end)) + '</span>'
+                 + escapeFinderHtml(label.slice(hit.end));
+        } else {
+            html = escapeFinderHtml(label);
+        }
+        if (cand.labelAlias) {
+            html += '<span class="dim">' + escapeFinderHtml(cand.labelAlias) + '</span>';
+        }
+        return html;
+    }
+
+    function renderFinderIcon(icon) {
+        if (!icon) return '';
+        if (icon.kind === 'text') {
+            return '<span class="icon icon-text">' + escapeFinderHtml(icon.text) + '</span>';
+        }
+        return '<span class="icon">' + (icon.svg || '') + '</span>';
+    }
+
+    function openFinder() {
+        // Toggle: re-press ⌘K closes.
+        var existing = document.getElementById('pdf2html-finder');
+        if (existing) { existing.remove(); return; }
+
+        // Kick off library fetch if we don't have it yet — first ⌘K on a
+        // fresh tab would otherwise render an empty "Other documents" group.
+        loadLibrary();
+
+        // Scope cycle: Tab advances, Shift+Tab reverses. 'all' includes the
+        // command palette too; the narrower scopes drop it so the user can
+        // focus on navigation without noise.
+        var SCOPES = [
+            { id: 'all',      label: 'All',           placeholder: 'Jump to anything — section, document, command…  ·  tab to cycle' },
+            { id: 'outline',  label: 'This document', placeholder: 'Search this document…' },
+            { id: 'files',    label: 'Files',         placeholder: 'Search files…' },
+        ];
+        var scopeIdx = 0;
+
+        var bg = document.createElement('div');
+        bg.id = 'pdf2html-finder';
+        bg.innerHTML =
+            '<div class="pdf2html-finder" role="dialog" aria-label="Quick finder">'
+          +   '<div class="pdf2html-finder-input-row">'
+          +     '<button type="button" class="pdf2html-finder-scope" id="pdf2html-finder-scope" '
+          +       'title="Cycle scope (Tab / Shift+Tab)" hidden>'
+          +       '<span class="scope-label"></span>'
+          +     '</button>'
+          +     '<input type="text" class="pdf2html-finder-input" id="pdf2html-finder-input" '
+          +       'autocomplete="off" spellcheck="false" autocapitalize="off" '
+          +       'placeholder="Jump to anything — section, document, command…  ·  tab to cycle">'
+          +     '<button type="button" class="pdf2html-finder-close" aria-label="Close">'
+          +       '<span class="pdf2html-kbd sm">Esc</span>'
+          +     '</button>'
+          +   '</div>'
+          +   '<div class="pdf2html-finder-list" id="pdf2html-finder-list"></div>'
+          +   '<div class="pdf2html-finder-foot">'
+          +     '<div class="foot-group">'
+          +       '<span class="foot-item"><span class="pdf2html-kbd">↑</span><span class="pdf2html-kbd">↓</span><span class="tip">navigate</span></span>'
+          +       '<span class="foot-item"><span class="pdf2html-kbd">Tab</span><span class="tip">scope</span></span>'
+          +       '<span class="foot-item"><span class="pdf2html-kbd">↵</span><span class="tip">go</span></span>'
+          +       '<span class="foot-item"><span class="pdf2html-kbd">Esc</span><span class="tip">close</span></span>'
+          +     '</div>'
+          +     '<div class="foot-group"><span class="foot-item tip" id="pdf2html-finder-count">—</span></div>'
+          +   '</div>'
+          + '</div>';
+
+        document.body.appendChild(bg);
+
+        var listEl = bg.querySelector('#pdf2html-finder-list');
+        var inputEl = bg.querySelector('#pdf2html-finder-input');
+        var countEl = bg.querySelector('#pdf2html-finder-count');
+        var closeBtn = bg.querySelector('.pdf2html-finder-close');
+        var scopeBtn = bg.querySelector('#pdf2html-finder-scope');
+        var scopeLabelEl = scopeBtn.querySelector('.scope-label');
+
+        function currentScope() { return SCOPES[scopeIdx].id; }
+        function cycleScope(delta) {
+            scopeIdx = (scopeIdx + delta + SCOPES.length) % SCOPES.length;
+            var scope = SCOPES[scopeIdx];
+            var isDefault = scopeIdx === 0;
+            // All mode: hide the pill entirely, fold the cue into the input
+            // placeholder. Narrower scopes: materialize the pill.
+            scopeBtn.hidden = isDefault;
+            scopeLabelEl.textContent = isDefault ? '' : scope.label;
+            scopeBtn.classList.toggle('accent', !isDefault);
+            inputEl.placeholder = scope.placeholder;
+            render();
+        }
+        scopeBtn.addEventListener('click', function () { cycleScope(1); inputEl.focus(); });
+
+        // Click outside (on the backdrop, not the modal) closes.
+        bg.addEventListener('mousedown', function (ev) {
+            if (ev.target === bg) { ev.preventDefault(); closeFinder(); }
+        });
+        closeBtn.addEventListener('click', function () { closeFinder(); });
+
+        var allCandidates = buildFinderCandidates();
+        var state = { visible: [], idx: 0 };
+
+        // Expose the active element-lookup fn to scroll-into-view after render.
+        function scrollActiveIntoView() {
+            var active = listEl.querySelector('.pdf2html-finder-row.active');
+            if (active && active.scrollIntoView) {
+                active.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+            }
+        }
+
+        // Keep the dropdown a tight rectangle — never render more than this.
+        var FINDER_MAX_ROWS = 8;
+
+        function render() {
+            // Bail if the modal was ripped out from under us (poll callback,
+            // async library fetch, etc. — the listEl would be orphaned).
+            if (!bg.isConnected) return;
+            var q = inputEl.value;
+            // Cap bareNum to an int that can't roll into Infinity/NaN — the
+            // gotoPage() lookup silently fails for missing pages, but we
+            // still want a sane upper bound on the synthetic "Go to" row.
+            var bareNumMatch = /^\s*(\d{1,7})\s*$/.exec(q);
+            var bareNum = bareNumMatch ? parseInt(bareNumMatch[1], 10) : 0;
+
+            var scope = currentScope();
+            var scoped = scope === 'all'
+                ? allCandidates
+                : allCandidates.filter(function (c) { return c.scope === scope; });
+            var filtered = finderFilter(scoped, q);
+
+            // Prepend a synthetic "Go to page N" entry when the user types a
+            // bare number — mirrors the : palette's `:42` shortcut.
+            // Only in scopes that include in-document navigation.
+            if (bareNum > 0 && (scope === 'all' || scope === 'outline')) {
+                filtered.unshift({
+                    cand: {
+                        group: 'Go to',
+                        icon: { kind: 'svg', svg: finderSvg('doc') },
+                        label: 'Page ' + bareNum,
+                        meta: 'jump',
+                        run: (function (n) { return function () { gotoPage(n); }; })(bareNum),
+                    },
+                    hit: null,
+                });
+            }
+
+            var totalBeforeCap = filtered.length;
+            if (filtered.length > FINDER_MAX_ROWS) {
+                filtered = filtered.slice(0, FINDER_MAX_ROWS);
+            }
+
+            state.visible = filtered;
+            state.totalBeforeCap = totalBeforeCap;
+            if (state.idx >= filtered.length) state.idx = 0;
+            if (state.idx < 0) state.idx = 0;
+
+            listEl.innerHTML = '';
+            if (!filtered.length) {
+                var empty = document.createElement('div');
+                empty.className = 'pdf2html-finder-empty';
+                empty.textContent = q ? 'No matches for "' + q + '"' : 'Nothing here yet.';
+                listEl.appendChild(empty);
+                countEl.textContent = '0 results';
+                return;
+            }
+
+            var lastGroup = null;
+            // Group counts for the group-label tail count chip.
+            var counts = {};
+            for (var gi = 0; gi < filtered.length; gi++) {
+                var g = filtered[gi].cand.group;
+                counts[g] = (counts[g] || 0) + 1;
+            }
+
+            for (var i = 0; i < filtered.length; i++) {
+                var entry = filtered[i];
+                var cand = entry.cand;
+                if (cand.group !== lastGroup) {
+                    lastGroup = cand.group;
+                    var gLabel = document.createElement('div');
+                    gLabel.className = 'pdf2html-finder-group';
+                    gLabel.innerHTML =
+                        escapeFinderHtml(cand.group)
+                      + '<span class="count">' + counts[cand.group] + '</span>';
+                    listEl.appendChild(gLabel);
+                }
+                var row = document.createElement('div');
+                row.className = 'pdf2html-finder-row' + (i === state.idx ? ' active' : '');
+                row.dataset.idx = String(i);
+                row.innerHTML =
+                    renderFinderIcon(cand.icon)
+                  + '<span class="label">' + renderFinderLabel(cand, entry.hit) + '</span>'
+                  + '<span class="meta">' + escapeFinderHtml(cand.meta || '') + '</span>';
+                row.addEventListener('mousemove', (function (idx) {
+                    return function () {
+                        if (state.idx !== idx) {
+                            state.idx = idx;
+                            // Light-touch re-render: just toggle the `active`
+                            // class instead of redrawing the whole list on
+                            // every mouse pixel.
+                            var rows = listEl.querySelectorAll('.pdf2html-finder-row');
+                            for (var r = 0; r < rows.length; r++) {
+                                rows[r].classList.toggle('active', Number(rows[r].dataset.idx) === idx);
+                            }
+                        }
+                    };
+                })(i));
+                row.addEventListener('mousedown', (function (runFn) {
+                    return function (ev) {
+                        ev.preventDefault();
+                        closeFinder();
+                        if (typeof runFn === 'function') {
+                            setTimeout(function () {
+                                try { runFn(); }
+                                catch (err) { console.warn('[finder] run failed:', err); }
+                            }, 0);
+                        }
+                    };
+                })(cand.run));
+                listEl.appendChild(row);
+            }
+
+            if (totalBeforeCap > filtered.length) {
+                countEl.textContent = 'showing ' + filtered.length + ' of ' + totalBeforeCap;
+            } else {
+                countEl.textContent = filtered.length + (filtered.length === 1 ? ' result' : ' results');
+            }
+            scrollActiveIntoView();
+        }
+
+        function move(delta) {
+            if (!state.visible.length) return;
+            state.idx = (state.idx + delta + state.visible.length) % state.visible.length;
+            var rows = listEl.querySelectorAll('.pdf2html-finder-row');
+            for (var r = 0; r < rows.length; r++) {
+                rows[r].classList.toggle('active', Number(rows[r].dataset.idx) === state.idx);
+            }
+            scrollActiveIntoView();
+        }
+
+        inputEl.addEventListener('input', render);
+        inputEl.addEventListener('keydown', function (ev) {
+            if (ev.key === 'Escape') {
+                ev.stopPropagation(); ev.preventDefault();
+                closeFinder();
+            } else if (ev.key === 'Tab') {
+                ev.preventDefault();
+                state.idx = 0;
+                cycleScope(ev.shiftKey ? -1 : 1);
+            } else if (ev.key === 'Enter') {
+                ev.preventDefault();
+                var pick = state.visible[state.idx];
+                if (pick && pick.cand && typeof pick.cand.run === 'function') {
+                    closeFinder();
+                    setTimeout(function () {
+                        try { pick.cand.run(); }
+                        catch (err) { console.warn('[finder] run failed:', err); }
+                    }, 0);
+                }
+            } else if (ev.key === 'ArrowDown' || (ev.ctrlKey && !ev.metaKey && !ev.altKey && (ev.key === 'j' || ev.key === 'J'))) {
+                ev.preventDefault(); move(1);
+            } else if (ev.key === 'ArrowUp' || (ev.ctrlKey && !ev.metaKey && !ev.altKey && (ev.key === 'k' || ev.key === 'K'))) {
+                ev.preventDefault(); move(-1);
+            }
+        });
+
+        // Library might not have loaded yet; re-render once it lands so the
+        // "Other documents" group fills in. Bail early if the user closed the
+        // finder while we were waiting — no point mutating an orphaned DOM.
+        if (!libraryEntries) {
+            var retries = 0;
+            var poll = setInterval(function () {
+                if (!bg.isConnected) { clearInterval(poll); return; }
+                if (libraryEntries || retries++ > 20) {
+                    clearInterval(poll);
+                    if (!bg.isConnected) return;
+                    allCandidates = buildFinderCandidates();
+                    render();
+                }
+            }, 150);
+        }
+
+        inputEl.focus();
+        render();
+    }
+
+    // ⌘K — open the finder dropdown. Bypasses isInputTarget so it works
+    // from any focus state (Raycast-style quick-open expectation).
     function registerQuickOpenHandler() {
         document.addEventListener('keydown', function (e) {
             if (!e.metaKey || e.ctrlKey || e.altKey) return;
             if (e.key !== 'k' && e.key !== 'K') return;
             e.preventDefault(); e.stopPropagation();
+            // If the : palette happens to be open, close it first — ⌘K is a
+            // distinct UI.
             var existing = document.getElementById('pdf2html-palette');
             if (existing) existing.remove();
-            openPalette();
-            var input = document.getElementById('pdf2html-palette-input');
-            if (input) {
-                input.value = 'open ';
-                input.dispatchEvent(new Event('input'));
-                input.selectionStart = input.selectionEnd = input.value.length;
-            }
+            openFinder();
         }, true);
     }
 
@@ -2246,6 +3536,16 @@
         });
         var lastActive = -1;
 
+        function setActive(active) {
+            if (active === lastActive) return;
+            if (lastActive >= 0) links[lastActive].classList.remove('pdf2html-active');
+            if (active >= 0) {
+                links[active].classList.add('pdf2html-active');
+                try { links[active].scrollIntoView({ block: 'nearest' }); } catch (e) {}
+            }
+            lastActive = active;
+        }
+
         function update() {
             var st = pc.scrollTop, sb = st + pc.clientHeight, bestIdx = 0, bestO = -1;
             for (var i = 0; i < offs.length; i++) {
@@ -2256,13 +3556,7 @@
             for (var j = 0; j < targets.length; j++) {
                 if (!isNaN(targets[j]) && targets[j] <= cur) active = j;
             }
-            if (active === lastActive) return;
-            if (lastActive >= 0) links[lastActive].classList.remove('pdf2html-active');
-            if (active >= 0) {
-                links[active].classList.add('pdf2html-active');
-                try { links[active].scrollIntoView({ block: 'nearest' }); } catch (e) {}
-            }
-            lastActive = active;
+            setActive(active);
         }
 
         var raf = null;
@@ -2270,6 +3564,9 @@
             if (raf) return;
             raf = requestAnimationFrame(function () { raf = null; update(); });
         }
+        for (var k = 0; k < links.length; k++) (function (idx) {
+            links[idx].addEventListener('click', function () { setActive(idx); });
+        })(k);
         pc.addEventListener('scroll', sched, { passive: true });
         update();
     }
@@ -2584,6 +3881,11 @@
     // swallow Enter / Esc before we see them).
     function mountSearch() {
         window.addEventListener('keydown', function (e) {
+            // Finger mode owns its alphabet while active. Search is also a
+            // window-capture listener registered earlier, so it must yield
+            // explicitly for overlapping keys like `s`.
+            if (fingerState) return;
+
             var bar = document.getElementById('pdf2html-search');
             var inSearchInput = e.target && e.target.id === 'pdf2html-search-input';
 
@@ -2927,6 +4229,298 @@
             ? String(searchState.activeIdx + 1)
             : '·';
         cEl.textContent = cur + ' / ' + n;
+    }
+
+
+    // ------------------------------------------------------------------------
+    // Native browser find shadow layer — Cmd-F across the full document without
+    // render-all.
+    //
+    // Chromium's native find skips text under display:none. Our render window
+    // deliberately hides non-buffered `.pc` elements that way, so Cmd-F only
+    // sees the current render buffer. Conversion/cache-upgrade writes
+    // <hash>/text.json with one plain-text blob per page; this mounts those
+    // blobs as clipped 1px nodes under the matching `.pf` wrappers. They stay
+    // in layout for browser-find indexing, but they do not paint or affect the
+    // pdf2htmlEX visible layer.
+    //
+    // Rendered pages hide their shadow node via CSS, so native find sees one
+    // source per page: real `.pc` text when rendered, shadow text otherwise.
+    // Selection bridging below promotes shadow hits to real `.t` ranges after
+    // native find has used the shadow layer to discover the page.
+    // ------------------------------------------------------------------------
+    function mountNativeFindShadowLayer() {
+        var hash = entryHash();
+        var container = document.getElementById('page-container');
+        if (!hash || !container) return;
+        mountNativeFindSelectionBridge();
+
+        fetch('/' + hash + '/text.json', { cache: 'no-store' }).then(function (r) {
+            return r.ok ? r.json() : null;
+        }).then(function (payload) {
+            if (!payload || payload.version !== 1 || !Array.isArray(payload.pages)) return;
+            mountFindShadowPages(payload.pages);
+        }).catch(function () { /* Missing text.json is non-fatal for old cache entries. */ });
+    }
+
+    function mountFindShadowPages(pages) {
+        var queue = [];
+        for (var i = 0; i < pages.length; i++) {
+            var page = parseInt(pages[i] && pages[i].page, 10);
+            var text = pages[i] && pages[i].text;
+            if (!page || typeof text !== 'string' || !text.trim()) continue;
+            queue.push({ page: page, text: text });
+        }
+        if (!queue.length) return;
+
+        var idx = 0;
+        function work(deadline) {
+            var start = performance.now();
+            while (idx < queue.length) {
+                mountFindShadowPage(queue[idx].page, queue[idx].text);
+                idx += 1;
+
+                // Keep startup responsive on large textbooks. requestIdleCallback
+                // gives us a real budget; the timeout fallback caps each slice.
+                if (deadline && deadline.timeRemaining && deadline.timeRemaining() < 2) break;
+                if (!deadline && performance.now() - start > 8) break;
+            }
+            if (idx < queue.length) scheduleIdle(work);
+            else document.body.classList.add('pdf2html-find-shadow-ready');
+        }
+        scheduleIdle(work);
+    }
+
+    function mountFindShadowPage(page, text) {
+        var pf = pageElement(page);
+        if (!pf) return;
+        var existing = pf.querySelector('.pdf2html-find-shadow');
+        if (existing && existing.parentElement === pf) return;
+
+        var shadow = document.createElement('div');
+        shadow.className = 'pdf2html-find-shadow';
+        shadow.setAttribute('aria-hidden', 'true');
+        shadow.dataset.pageNo = String(page);
+        shadow.textContent = text;
+        pf.appendChild(shadow);
+    }
+
+    var nativeFindBridgeMounted = false;
+    var nativeFindBridgeActive = false;
+    var nativeFindBridgeSeq = 0;
+    var nativeFindPageIndexCache = new WeakMap();
+
+    function mountNativeFindSelectionBridge() {
+        if (nativeFindBridgeMounted) return;
+        nativeFindBridgeMounted = true;
+
+        document.addEventListener('selectionchange', function () {
+            if (nativeFindBridgeActive) return;
+            var sel = window.getSelection();
+            if (!sel || !sel.rangeCount || !sel.anchorNode) return;
+
+            var range = sel.getRangeAt(0);
+            var shadow = shadowElementForRange(range);
+            if (!shadow) return;
+
+            var selectedText = sel.toString();
+            if (!selectedText) return;
+
+            var startOffset = rangeOffsetInside(shadow, range);
+            if (startOffset == null) return;
+
+            var page = parseInt(shadow.dataset.pageNo || '', 10);
+            if (!page) return;
+
+            var seq = ++nativeFindBridgeSeq;
+            requestAnimationFrame(function () {
+                if (seq !== nativeFindBridgeSeq) return;
+                promoteNativeFindShadowSelection(page, selectedText, startOffset);
+            });
+        });
+    }
+
+    function shadowElementForRange(range) {
+        var a = nodeElement(range.startContainer);
+        var b = nodeElement(range.endContainer);
+        var sa = a && a.closest ? a.closest('.pdf2html-find-shadow') : null;
+        var sb = b && b.closest ? b.closest('.pdf2html-find-shadow') : null;
+        return sa && sa === sb ? sa : null;
+    }
+
+    function nodeElement(node) {
+        if (!node) return null;
+        return node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
+    }
+
+    function rangeOffsetInside(root, range) {
+        try {
+            var pre = document.createRange();
+            pre.selectNodeContents(root);
+            pre.setEnd(range.startContainer, range.startOffset);
+            return pre.toString().length;
+        } catch (e) {
+            return null;
+        }
+    }
+
+    function promoteNativeFindShadowSelection(page, selectedText, shadowStartOffset) {
+        var pf = pageElement(page);
+        if (!pf) return;
+        var pc = pf.querySelector('.pc');
+        var shadow = pf.querySelector('.pdf2html-find-shadow');
+        if (!pc || !shadow) return;
+
+        var occurrence = occurrenceIndexBefore(
+            shadow.textContent || '', selectedText, shadowStartOffset);
+
+        var index = buildRealPageTextIndex(pc);
+        var start = nthIndexOf(index.text, selectedText, occurrence);
+        if (start < 0) start = index.text.indexOf(selectedText);
+        if (start < 0) return;
+
+        var realRange = realRangeFromIndex(index, start, selectedText.length);
+        if (!realRange) return;
+
+        // Close the race where native find selectionchange fires before the
+        // IntersectionObserver render-window has force-rendered the target.
+        // Do this only after mapping succeeds; otherwise the page's shadow
+        // node would become display:none while still owning the active native
+        // find selection.
+        pf.classList.add('pdf2html-force');
+
+        nativeFindBridgeActive = true;
+        searchSuppressPinUntil = performance.now() + 500;
+        try {
+            var sel = window.getSelection();
+            if (sel) {
+                sel.removeAllRanges();
+                sel.addRange(realRange);
+            }
+            scrollRealRangeIntoView(realRange);
+        } catch (e) {
+            // Leave the browser's native shadow selection alone if the real
+            // page range detached while rendering settled.
+        } finally {
+            setTimeout(function () { nativeFindBridgeActive = false; }, 0);
+        }
+    }
+
+    function occurrenceIndexBefore(text, needle, offset) {
+        if (!needle) return 0;
+        var n = 0;
+        var cursor = 0;
+        var idx;
+        while ((idx = text.indexOf(needle, cursor)) !== -1 && idx < offset) {
+            n += 1;
+            cursor = idx + needle.length;
+        }
+        return n;
+    }
+
+    function nthIndexOf(text, needle, occurrence) {
+        if (!needle) return -1;
+        var cursor = 0;
+        var idx = -1;
+        for (var i = 0; i <= occurrence; i++) {
+            idx = text.indexOf(needle, cursor);
+            if (idx === -1) return -1;
+            cursor = idx + needle.length;
+        }
+        return idx;
+    }
+
+    function buildRealPageTextIndex(pc) {
+        var cached = nativeFindPageIndexCache.get(pc);
+        if (cached) return cached;
+
+        var text = '';
+        var map = [];
+        var lines = pc.querySelectorAll('.t');
+
+        function appendMapped(raw, nodes) {
+            var start = raw.search(/\S/);
+            if (start === -1) return;
+            var end = raw.length;
+            while (end > start && /\s/.test(raw.charAt(end - 1))) end--;
+            if (text) {
+                text += '\n';
+                map.push(null);
+            }
+            for (var i = start; i < end; i++) {
+                text += raw.charAt(i);
+                map.push(nodes[i] || null);
+            }
+        }
+
+        for (var i = 0; i < lines.length; i++) {
+            var raw = '';
+            var nodes = [];
+            var walker = document.createTreeWalker(lines[i], NodeFilter.SHOW_TEXT);
+            var node;
+            while ((node = walker.nextNode())) {
+                for (var j = 0; j < node.nodeValue.length; j++) {
+                    raw += node.nodeValue.charAt(j);
+                    nodes.push({ node: node, offset: j });
+                }
+            }
+            appendMapped(raw, nodes);
+        }
+
+        if (!lines.length) {
+            var fallback = document.createTreeWalker(pc, NodeFilter.SHOW_TEXT);
+            var fnode;
+            while ((fnode = fallback.nextNode())) {
+                for (var k = 0; k < fnode.nodeValue.length; k++) {
+                    text += fnode.nodeValue.charAt(k);
+                    map.push({ node: fnode, offset: k });
+                }
+            }
+        }
+
+        var out = { text: text, map: map };
+        nativeFindPageIndexCache.set(pc, out);
+        return out;
+    }
+
+    function realRangeFromIndex(index, start, length) {
+        var map = index.map;
+        var end = start + length - 1;
+        if (start < 0 || end >= map.length) return null;
+
+        var first = null;
+        var last = null;
+        for (var i = start; i <= end; i++) {
+            if (!first && map[i]) first = map[i];
+            if (map[i]) last = map[i];
+        }
+        if (!first || !last) return null;
+
+        var r = document.createRange();
+        try {
+            r.setStart(first.node, first.offset);
+            r.setEnd(last.node, last.offset + 1);
+            return r;
+        } catch (e) {
+            return null;
+        }
+    }
+
+    function scrollRealRangeIntoView(range) {
+        var pc = document.getElementById('page-container');
+        if (!pc) return;
+        var rect = range.getBoundingClientRect();
+        if (rect.top === 0 && rect.bottom === 0 && rect.left === 0) return;
+        var delta = scrollDeltaForRect(pc, rect);
+        if (Math.abs(delta) >= 1) pc.scrollBy({ top: delta, behavior: 'smooth' });
+    }
+
+    function scheduleIdle(fn) {
+        if (window.requestIdleCallback) {
+            window.requestIdleCallback(fn, { timeout: 500 });
+        } else {
+            setTimeout(function () { fn(null); }, 0);
+        }
     }
 
 

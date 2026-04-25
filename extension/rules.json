@@ -14,7 +14,7 @@
         "action": {
             "type": "redirect",
             "redirect": {
-                "regexSubstitution": "http://localhost:7435/view?url=\\0"
+                "regexSubstitution": "http://localhost:7435/view-raw?\\0"
             }
         },
         "condition": {

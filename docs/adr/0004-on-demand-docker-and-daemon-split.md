@@ -45,8 +45,9 @@ characteristics:
 - Jobs:
   - Serve cached HTML from `~/.cache/pdf_viewer/<hash>/*.html`
   - Serve overlay assets from `~/.cache/pdf_viewer/_assets/` (symlinked to repo)
-  - Hash incoming `/view?path=` or `/view?url=` requests → check cache →
-    stream HTML if hit, or 307-redirect to the original URL if miss
+  - Hash incoming `/view?path=`, `/view?url=`, or extension
+    `/view-raw?<url>` requests → check cache → stream HTML if hit, or
+    307-redirect to the original URL if miss
   - Track visits (eventually, for LRU eviction)
 - Does **not** invoke Docker. Never. The daemon itself doesn't know what
   pdf2htmlEX is.
@@ -69,7 +70,7 @@ characteristics:
 
 When a user clicks a PDF link the daemon hasn't seen:
 
-1. Browser (via extension redirect) → `localhost:7435/view?url=<X>`
+1. Browser (via extension redirect) → `localhost:7435/view-raw?<X>`
 2. Daemon: hash X, check cache, **miss**
 3. Daemon: `307 Location: <X>` → browser opens `<X>` natively (Chrome's
    PDF viewer, degraded but functional)
