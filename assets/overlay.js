@@ -2977,9 +2977,6 @@
             }
         }
 
-        // Keep the dropdown a tight rectangle — never render more than this.
-        var FINDER_MAX_ROWS = 8;
-
         function render() {
             // Bail if the modal was ripped out from under us (poll callback,
             // async library fetch, etc. — the listEl would be orphaned).
@@ -3013,13 +3010,7 @@
                 });
             }
 
-            var totalBeforeCap = filtered.length;
-            if (filtered.length > FINDER_MAX_ROWS) {
-                filtered = filtered.slice(0, FINDER_MAX_ROWS);
-            }
-
             state.visible = filtered;
-            state.totalBeforeCap = totalBeforeCap;
             if (state.idx >= filtered.length) state.idx = 0;
             if (state.idx < 0) state.idx = 0;
 
@@ -3089,11 +3080,7 @@
                 listEl.appendChild(row);
             }
 
-            if (totalBeforeCap > filtered.length) {
-                countEl.textContent = 'showing ' + filtered.length + ' of ' + totalBeforeCap;
-            } else {
-                countEl.textContent = filtered.length + (filtered.length === 1 ? ' result' : ' results');
-            }
+            countEl.textContent = filtered.length + (filtered.length === 1 ? ' result' : ' results');
             scrollActiveIntoView();
         }
 
