@@ -1,14 +1,16 @@
 """pdf_viewer daemon — read-only FastAPI service over ~/.cache/pdf_viewer/.
 
 Routes:
-    GET /view?path=<local>   cached HTML or stream the PDF (miss → native viewer)
-    GET /view?url=<remote>   cached HTML or 307 to <remote>  (miss → native viewer)
-    GET /view-raw?<remote>   same as /view?url=, but preserves raw query strings
-    GET /stats               visit totals + top 20 by count (hash → name enriched)
-    GET /stats/recent        raw visit timeline, most-recent first
-    GET /_assets/*           overlay.{css,js} from the repo assets dir
-    GET /<hash>/<file>       cached pdf2htmlEX bundle (html + any sibling files)
-    GET /healthz             liveness probe
+    GET    /view?path=<local>   cached HTML or stream the PDF (miss → native viewer)
+    GET    /view?url=<remote>   cached HTML or 307 to <remote>  (miss → native viewer)
+    GET    /view-raw?<remote>   same as /view?url=, but preserves raw query strings
+    GET    /stats               visit totals + top 20 by count (hash → name enriched)
+    GET    /stats/recent        raw visit timeline, most-recent first
+    GET    /_assets/*           overlay.{css,js} from the repo assets dir
+    GET    /<hash>/<file>       cached pdf2htmlEX bundle (html + any sibling files)
+    GET    /healthz             liveness probe
+    DELETE /mapping/<hash>      drop the mapping row, rmtree the dir, forget visits
+    PUT    /entry/<hash>/name   rename a cache entry's HTML file (changes search name)
 
 The daemon never invokes Docker — conversion stays in the Raycast scripts
 (ADR 0004). Cache hits are O(hash + sendfile); content-hash lookups for
@@ -24,8 +26,10 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import html as _html
 import pathlib
 import re
+import shutil
 import time
 import urllib.parse
 from typing import Optional
@@ -349,6 +353,185 @@ def _library_search_text(name: str, source_ref: Optional[str]) -> str:
             parts.append(pathlib.Path(source_ref).name)
             parts.append(str(pathlib.Path(source_ref).parent))
     return _normalized_search_text(*parts)
+
+
+_HASH_RE = re.compile(r"^[a-f0-9]{6,32}$")
+
+
+def _strip_passthrough(url: str) -> str:
+    """Remove every `_pdfvw=passthrough` param from a URL's query string.
+
+    Pre-existing convert.sh bug: AppleScript reads the active Comet tab's URL
+    *after* the daemon's first 307, so source_refs in mappings.tsv have the
+    marker baked in. Redirecting straight to that URL trips the allow/redirect
+    race and stacks markers, so we sanitize on the way out.
+    """
+    parsed = urllib.parse.urlparse(url)
+    if not parsed.query:
+        return url
+    pairs = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+    cleaned = [(k, v) for k, v in pairs if not (k == "_pdfvw" and v == "passthrough")]
+    new_query = urllib.parse.urlencode(cleaned)
+    return urllib.parse.urlunparse(parsed._replace(query=new_query))
+
+
+@app.delete("/mapping/{hash_}")
+def delete_mapping(hash_: str):
+    """Wipe a cache entry: drop its mappings.tsv row, rmtree the dir, forget visits.
+
+    Returns {source_ref, removed_dir, mapping_dropped, visits_deleted} so the
+    overlay can redirect back to the original URL/path. Idempotent: a missing
+    dir or row is not an error — we report what we actually removed.
+
+    Hash is anchored to ^[a-f0-9]{6,32}$ to keep rmtree inside CACHE_DIR.
+    """
+    if not _HASH_RE.match(hash_):
+        raise HTTPException(400, "invalid hash")
+
+    map_file = CACHE_DIR / "mappings.tsv"
+    source_ref: Optional[str] = None
+    mapping_dropped = False
+    if map_file.is_file():
+        kept: list[str] = []
+        with map_file.open(encoding="utf-8") as f:
+            for line in f:
+                parts = line.rstrip("\n").split("\t")
+                if len(parts) >= 4 and parts[2] == hash_:
+                    source_ref = _strip_passthrough(parts[1])
+                    mapping_dropped = True
+                    continue
+                kept.append(line if line.endswith("\n") else line + "\n")
+        if mapping_dropped:
+            tmp = map_file.with_suffix(map_file.suffix + ".tmp")
+            tmp.write_text("".join(kept), encoding="utf-8")
+            tmp.replace(map_file)
+
+    entry_dir = CACHE_DIR / hash_
+    removed_dir = False
+    if entry_dir.is_dir():
+        # Resolve and re-check parent to defend against symlink shenanigans.
+        resolved = entry_dir.resolve()
+        if resolved.parent == CACHE_DIR.resolve():
+            shutil.rmtree(resolved, ignore_errors=True)
+            removed_dir = not resolved.exists()
+
+    visits_deleted = visits.forget(hash_)
+
+    if not (mapping_dropped or removed_dir):
+        raise HTTPException(404, f"no cache entry for hash {hash_}")
+
+    return {
+        "hash": hash_,
+        "source_ref": source_ref,
+        "mapping_dropped": mapping_dropped,
+        "removed_dir": removed_dir,
+        "visits_deleted": visits_deleted,
+    }
+
+
+class RenameRequest(BaseModel):
+    name: str
+
+
+_NAME_MAX_LEN = 200
+
+
+def _sanitize_name(raw: str) -> str:
+    """Filename stem from user input. Drop a trailing `.html`, replace path
+    separators / control chars with `-`, strip leading dots, cap length.
+    Returns '' if nothing usable remains.
+    """
+    s = (raw or "").strip()
+    if s.lower().endswith(".html"):
+        s = s[:-5].rstrip()
+    s = re.sub(r"[\x00-\x1f/\\]+", "-", s).lstrip(".").strip()
+    return s[:_NAME_MAX_LEN]
+
+
+@app.put("/entry/{hash_}/name")
+def rename_entry(hash_: str, body: RenameRequest):
+    """Rename a cache entry's HTML file so its search name (`html.stem`)
+    becomes `body.name`. Updates mappings.tsv and rewrites the HTML
+    `<title>` so a fresh load shows the new name in the tab.
+
+    Hash is anchored to ^[a-f0-9]{6,32}$ so all path joins stay inside
+    CACHE_DIR. 409 if another file in the entry already uses the target
+    name; no-op (200 with renamed=False) when the name is unchanged.
+    """
+    if not _HASH_RE.match(hash_):
+        raise HTTPException(400, "invalid hash")
+    new_name = _sanitize_name(body.name)
+    if not new_name:
+        raise HTTPException(400, "name is empty after sanitization")
+
+    entry_dir = CACHE_DIR / hash_
+    if not entry_dir.is_dir():
+        raise HTTPException(404, f"no cache entry for hash {hash_}")
+    html = first_html(entry_dir)
+    if html is None:
+        raise HTTPException(404, f"no html in entry {hash_}")
+
+    old_stem = html.stem
+    if old_stem == new_name:
+        return {
+            "hash": hash_,
+            "old_name": old_stem,
+            "new_name": new_name,
+            "renamed": False,
+            "href": f"/{hash_}/{html.name}",
+        }
+
+    new_path = entry_dir / (new_name + ".html")
+    if new_path.exists():
+        raise HTTPException(409, f"name already in use: {new_name}")
+
+    # Rewrite <title> in place so the next fresh load shows the new name
+    # in the browser tab. The overlay also patches document.title live, so
+    # the current tab updates without a reload.
+    try:
+        text = html.read_text(encoding="utf-8")
+        new_text, n = re.subn(
+            r"<title>.*?</title>",
+            f"<title>{_html.escape(new_name)}</title>",
+            text, count=1, flags=re.DOTALL,
+        )
+        if n:
+            html.write_text(new_text, encoding="utf-8")
+    except OSError:
+        pass
+
+    html.rename(new_path)
+
+    map_file = CACHE_DIR / "mappings.tsv"
+    if map_file.is_file():
+        new_html_path = str(new_path)
+        kept: list[str] = []
+        with map_file.open(encoding="utf-8") as f:
+            for line in f:
+                parts = line.rstrip("\n").split("\t")
+                if len(parts) >= 4 and parts[2] == hash_:
+                    parts[3] = new_html_path
+                    kept.append("\t".join(parts) + "\n")
+                else:
+                    kept.append(line if line.endswith("\n") else line + "\n")
+        tmp = map_file.with_suffix(map_file.suffix + ".tmp")
+        tmp.write_text("".join(kept), encoding="utf-8")
+        tmp.replace(map_file)
+
+    # One-off frecency bump: a rename is a strong "I curated this entry"
+    # signal, but only the first time. Subsequent renames return 0 so
+    # ten edits don't stack to 10× the score. Three effective opens =
+    # +12 score now, decaying naturally to +3 after a day.
+    boosted = visits.boost(hash_, n=3)
+
+    return {
+        "hash": hash_,
+        "old_name": old_stem,
+        "new_name": new_name,
+        "renamed": True,
+        "href": f"/{hash_}/{new_path.name}",
+        "frecency_boosted": boosted,
+    }
 
 
 @app.get("/library")

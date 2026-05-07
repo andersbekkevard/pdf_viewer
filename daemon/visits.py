@@ -17,6 +17,8 @@ from typing import Literal
 DB_PATH = pathlib.Path.home() / ".cache" / "pdf_viewer" / "visits.db"
 SESSION_WINDOW_SEC = 15 * 60
 
+VisitKind = Literal["url", "path", "boost"]
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS visits (
     hash TEXT    NOT NULL,
@@ -51,6 +53,56 @@ def record(hash_: str, kind: Literal["url", "path"]) -> None:
             )
     except sqlite3.Error:
         pass
+
+
+def boost(hash_: str, n: int = 3) -> int:
+    """Bump frecency by N effective opens — once per entry, ever.
+
+    Inserts `n` rows spaced one session-window apart so each lands in a
+    distinct 15-min bucket — the rank query (`COUNT(DISTINCT ts /
+    SESSION_WINDOW_SEC)`) then sees +n. The newest row is at `now`, so
+    the recency multiplier becomes 4.0 immediately and decays normally.
+    Tagged kind="boost" to distinguish from real opens in stats.
+
+    Idempotent per hash: if any kind="boost" row already exists for this
+    hash, returns 0. The rationale is that the boost reflects a one-time
+    "I curated this entry" signal, not a per-edit action — five renames
+    shouldn't stack to 5× the bump. `forget(hash)` clears boost rows
+    along with the rest, so a re-converted entry can boost again.
+
+    Returns rows actually inserted. Never raises.
+    """
+    if n <= 0:
+        return 0
+    try:
+        with _connect() as conn:
+            already = conn.execute(
+                "SELECT 1 FROM visits WHERE hash = ? AND kind = 'boost' LIMIT 1",
+                (hash_,),
+            ).fetchone()
+            if already:
+                return 0
+            now = int(time.time())
+            rows = [
+                (hash_, now - i * SESSION_WINDOW_SEC, "boost")
+                for i in range(n)
+            ]
+            conn.executemany(
+                "INSERT INTO visits(hash, ts, kind) VALUES(?, ?, ?)", rows,
+            )
+        return n
+    except sqlite3.Error:
+        return 0
+
+
+def forget(hash_: str) -> int:
+    """Delete every visit row for a hash. Returns rows deleted."""
+    try:
+        with _connect() as conn:
+            cur = conn.execute("DELETE FROM visits WHERE hash = ?", (hash_,))
+            return cur.rowcount or 0
+    except sqlite3.Error:
+        return 0
 
 
 def summary(top_n: int = 20) -> dict:

@@ -1261,6 +1261,7 @@
                     + cRow(':jump <a-z>', '—', 'Jump to bookmark')
                     + cRow(':clear <a-z>', '—', 'Delete a bookmark')
                     + cRow(':open <doc>', ':o', 'Open another cached doc')
+                    + cRow(':rename <name>', ':rn', 'Rename this PDF (Tab fills current name)')
                     + cRow(':pin', '—', 'Toggle pin-to-center')
                     + cRow(':scrolloff N', ':so', 'Scrolloff band at N% (e.g. :so 25)')
                     + cRow(':buffer N', ':buf', 'Render ±N pages around viewport')
@@ -1388,6 +1389,78 @@
         }
         var pick = exact || sub || completeLibraryEntries(needle).slice(-1)[0];
         if (pick && pick.href) location.href = pick.href;
+    }
+
+    // Wipe this entry from the cache (mappings.tsv row + on-disk dir + visit
+    // history) and bounce back to the original PDF. Used to recover from a
+    // bad pdf2htmlEX conversion — afterwards it's as if the file was never
+    // converted, so the next click goes back through the regular pipeline.
+    // Uses location.replace so the just-deleted /<hash>/... URL doesn't sit
+    // in history pointing at a 404.
+    // Rename this entry's HTML file so its search name (the stem the
+    // daemon returns from /library, the same one ⌘K + `:open` filter on)
+    // becomes `newName`. The overlay patches document.title locally so
+    // the tab updates without a reload; the daemon also rewrites <title>
+    // in the on-disk HTML for fresh loads. Bumps history to the new URL
+    // so a manual reload finds the renamed file.
+    function renameCurrentEntry(newName) {
+        var hash = entryHash();
+        if (!hash) return;
+        var name = String(newName || '').trim();
+        if (!name) return;
+        fetch('/entry/' + encodeURIComponent(hash) + '/name', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: name }),
+        })
+            .then(function (r) {
+                return r.json().then(
+                    function (j) { return { ok: r.ok, body: j }; },
+                    function () { return { ok: r.ok, body: null }; }
+                );
+            })
+            .then(function (resp) {
+                if (!resp.ok) {
+                    var msg = resp.body && resp.body.detail
+                        ? String(resp.body.detail)
+                        : 'rename failed';
+                    console.warn('[rename]', msg);
+                    return;
+                }
+                var info = resp.body || {};
+                var newDisplay = info.new_name || name;
+                document.title = newDisplay;
+                // Bust the cached library list so the next ⌘K / `:open` reflects
+                // the new name. loadLibrary short-circuits when libraryEntries
+                // is non-null, so we null it and re-fetch.
+                libraryEntries = null;
+                loadLibrary();
+                // Update the URL bar so a manual reload hits the renamed file
+                // instead of 404-ing on the old stem. replaceState avoids the
+                // full reload that location.replace would trigger.
+                if (info.href) {
+                    try { history.replaceState({}, '', info.href); } catch (_) {}
+                }
+            })
+            .catch(function (e) { console.warn('[rename] failed:', e); });
+    }
+
+    function deleteCurrentMapping() {
+        var hash = entryHash();
+        if (!hash) return;
+        fetch('/mapping/' + encodeURIComponent(hash), { method: 'DELETE' })
+            .then(function (r) { return r.ok ? r.json() : null; })
+            .then(function (info) {
+                var src = info && info.source_ref;
+                if (!src) { location.replace('about:blank'); return; }
+                // Local paths are stored bare in mappings.tsv (e.g. /Users/me/x.pdf).
+                // Re-attach the file:// scheme so the browser actually navigates
+                // to the original — and so the extension's file:// redirect rule
+                // fires on the next visit. encodeURI keeps spaces/unicode legal.
+                if (src.charAt(0) === '/') src = 'file://' + encodeURI(src);
+                location.replace(src);
+            })
+            .catch(function (e) { console.warn('[delete] failed:', e); });
     }
 
     // Marks — persistent bookmarks keyed by hash + single letter.
@@ -1684,6 +1757,41 @@
         { name: 'set',     aliases: [],       desc: 'open settings',
           argCompleter: null,
           handler: function () { openSettings(); } },
+        { name: 'rename',  aliases: ['rn'],
+          desc: function () {
+              var current = (document.title || '').trim();
+              return current ? 'rename "' + current + '"' : 'rename this PDF';
+          },
+          argCompleter: function (tail) {
+              var current = (document.title || '').trim();
+              if (!current) return [];
+              // Only seed the current name when the arg is empty —
+              // `:rename<Tab>` autofills, then user edits freely. Showing
+              // the suggestion while user types the new name would create
+              // cycling weirdness on the single-row wildmenu.
+              if (String(tail || '').length > 0) return [];
+              return [{
+                  value: 'rename ' + current,
+                  display: current,
+                  alias: '(current)',
+                  desc: 'Tab to fill · edit · Enter to rename',
+                  rawDisplay: true,
+              }];
+          },
+          handler: function (a) { renameCurrentEntry(a); } },
+        // Destructive, but recoverable (just re-convert). The `confirm` arg is
+        // mandatory so `:d<Enter>` expands to `delete ` instead of nuking the
+        // cache entry on a stray keystroke.
+        { name: 'delete',  aliases: [],       desc: 'wipe this PDF from cache + go to source',
+          argCompleter: function (tail) {
+              var lt = String(tail || '').toLowerCase().trim();
+              var opts = [{ value: 'delete confirm', display: 'confirm', desc: 'wipe cache entry, redirect to original' }];
+              if (!lt) return opts;
+              return opts.filter(function (o) { return o.display.indexOf(lt) === 0; });
+          },
+          handler: function (a) {
+              if ((a || '').toLowerCase().trim() === 'confirm') deleteCurrentMapping();
+          } },
     ];
 
     function findCommand(name) {
@@ -1839,7 +1947,16 @@
             var cmd = findCommand(match.value);
             if (!commandTakesArg(cmd)) return false;
             input.value = cmd.name + ' ';
-            computeMatches(); renderMatches();
+            computeMatches();
+            // If the arg completer offers exactly one suggestion, fill it
+            // directly so e.g. `:re<Tab>` lands at `:rename <current>` in
+            // one keystroke instead of two. Multi-suggestion completers
+            // (chapter, open, mark) still expand to `:cmd ` and let the
+            // user cycle — they have nothing single to commit to.
+            if (state.matches.length === 1 && state.matches[0].value) {
+                input.value = state.matches[0].value;
+            }
+            renderMatches();
             return true;
         }
 
