@@ -11,7 +11,7 @@ navigation, tab management, link hints, visual mode, zoom, scroll,
 vomnibar, etc. Every single-letter and `g`/`y`/`z`-prefix key is claimed
 for something.
 
-Our HTML viewer needs shortcuts too: sidebar toggle, render-all toggle,
+Our HTML viewer needs shortcuts too: sidebar toggle,
 page counter toggle, command palette, cheatsheet, page jumps, outline
 navigation. If we naïvely claim keys, two failure modes appear:
 
@@ -55,7 +55,6 @@ rejected"). Claimed keys chosen from the complement:
 |----------|------------------------------|-------------------------|
 | `s`      | Toggle sidebar               | Yes |
 | `⌘.`     | Toggle sidebar               | Yes |
-| `A`      | Toggle render-all            | Yes (uppercase; `a` also free) |
 | `⌘⇧.`    | Toggle page counter          | Yes |
 | `:`      | Open command palette         | Yes |
 | `?`      | Toggle cheatsheet            | **Conflicts** — requires Vimium exclusion rule for `localhost:7435` |
@@ -69,8 +68,6 @@ route every parameterized command through the palette:
 
 - `:42` → goto page 42
 - `:pin 30` → pin cursor at 30%
-- `:buffer 20` → render ±20 pages
-- `:all` → toggle render-all
 - `:yank` → copy "Chapter · p. N"
 - `:counter` → toggle page counter
 - `:help` → cheatsheet
@@ -105,11 +102,10 @@ between `[N]gp` vs `[N]go` vs `[N]gz` — none of them. The palette is
 keyboard-fast (`:42<CR>`) and discoverable (`:help`).
 
 **Respect the prefix semantics.** When we considered `g`-prefixed
-toggles (like `gr` for render-all), the user's reaction was "weird
-letter for a toggle." `g` means "go" in vim tradition — navigation and
-set-value verbs. We use it only for those (none currently in scope,
-the palette covers them all). Toggles get uppercase letters or modifier
-chords.
+toggles, the user's reaction was "weird letter for a toggle." `g` means
+"go" in vim tradition — navigation and set-value verbs. We use it only
+for those (none currently in scope, the palette covers them all).
+Toggles get uppercase letters or modifier chords.
 
 **Capture phase sparingly.** The Escape handler genuinely needs capture
 phase (Vimium listens in capture too, and our priority chain —
@@ -151,7 +147,9 @@ bubble phase and trust the target/input guard.
 ## Related
 
 - ADR 0001 (why Vimium matters to us at all)
-- ADR 0002 (render window — the thing the palette's `:buffer` controls)
+- ADR 0002 / ADR 0009 (the render-window contract; ADR 0009 retired the
+  `:buffer` and `:all` palette commands listed in earlier revisions of
+  this ADR)
 - plan.md §7 "Shortcut registry" (current + rejected + proposed)
 - `assets/overlay.js` — `register*Handler` and `openPalette` /
   `runCommand` implementations

@@ -86,9 +86,11 @@ All core phases done (1 → 7). What works end-to-end today:
   logged off the response path via FastAPI `BackgroundTasks`. Powers
   `/stats`, `/stats/recent`, and the visits-sorted library picker
   behind `⌘K` / `:open`.
-- **Native `⌘F` full-document indexing** — conversion/cache-upgrade writes
-  per-page `text.json`; the overlay mounts a clipped shadow text layer so
-  browser find can scan the whole document without render-all. Overlay `/`
+- **Native `⌘F` full-document indexing** — `.pf` carries
+  `content-visibility: auto` so off-viewport pages skip paint+layout
+  but their text stays in the layout tree, where Chromium's native
+  find indexes it. No surrogate text layer; matches scroll to the real
+  line with the standard yellow highlight. See ADR 0009. Overlay `/`
   search remains visible-page scoped.
 
 What's not built: cross-device access over Tailscale (phase 8, optional).

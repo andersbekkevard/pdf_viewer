@@ -25,8 +25,7 @@ as an A/B reference and must not be touched.
 │   ├── <stem>.outline.js + fonts/images/...  pdf2htmlEX output assets
 │   ├── _source/         downloaded source PDF (remote) or none (local)
 │   │   └── document.pdf
-│   ├── meta.json        source URL/path, display name, timestamps
-│   └── text.json        per-page plain text for native Cmd-F shadow indexing
+│   └── meta.json        source URL/path, display name, timestamps
 └── ...
 ```
 
@@ -99,14 +98,11 @@ behind `⌘K` / `:open`.
 
 ## Find text
 
-`text.json` is extracted from the cached pdf2htmlEX HTML, not the source PDF.
-The overlay mounts it as a clipped per-page shadow layer so native browser
-`Cmd-F` can index the full document without toggling render-all. Existing
-entries can be backfilled without Docker:
-
-```bash
-scripts/upgrade-cache.sh --mode=text
-```
+Native browser `Cmd-F` indexes the full document because `.pf` carries
+`content-visibility: auto` (see ADR 0009): off-viewport pages skip paint
+and layout but their text stays in the DOM. No per-document index file is
+generated or fetched; `text.json` files in older cache entries are
+orphaned and can be deleted at leisure.
 
 **LRU eviction is deliberately not implemented.** Add a
 `scripts/prune-cache.sh --keep N` when cache bloat actually becomes a

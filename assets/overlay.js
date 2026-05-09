@@ -20,14 +20,12 @@
         registerQuickOpenHandler();
         registerSettingsHandler();
         registerPagenoToggleHandler();
-        registerRenderAllHandler();
         registerPageJumpHandler();
         registerSidebarKeyHandler();
         registerFocusRouting();
         registerPageTracker();
         mountCursorPin();
         mountRenderWindow();
-        mountNativeFindShadowLayer();
         mountOutlineActiveTracker();
         mountPageCounter();
         mountResumePosition();
@@ -691,11 +689,10 @@
     // ------------------------------------------------------------------------
     // Settings modal — opens via `:set`, the sidebar footer button, or the
     // `⌘,` keybind. Groups: Appearance (theme/accent/zoom), Behavior
-    // (render-all, counter, buffer, pin), Keyboard (leader, esc-clears,
-    // smooth-scroll).
+    // (counter, scrolloff, pin, case), Keyboard (leader, esc-clears).
     //
-    // Controls talk to the same hidden #pdf2html-all-input / -buffer-input /
-    // -pin-input that the palette commands fire change events on, so state
+    // Controls talk to the same hidden #pdf2html-scrolloff-input /
+    // -pinned-input that the palette commands fire change events on, so state
     // flows through a single persistence path.
     // ------------------------------------------------------------------------
     function openSettings() {
@@ -723,8 +720,20 @@
         var body = el('div', { class: 'pdf2html-settings-body', tabindex: '-1' });
 
         // --- Appearance ------------------------------------------------
-        var curZoom = parseFloat(localStorage.getItem('pdf2html-zoom') || '1.4');
-        if (!isFinite(curZoom) || curZoom <= 0) curZoom = 1.4;
+        // Slider shows the current effective zoom. If the stored value is
+        // the 'auto' sentinel (or unset), read the resolved zoom off
+        // #page-container so the slider tracks the auto-fit result.
+        // Moving the slider switches mode to manual via __pdf2htmlSetZoom,
+        // which writes per-doc.
+        var zRaw = readZoomPref();
+        var zPc = document.getElementById('page-container');
+        var curZoom;
+        if (zRaw === null || zRaw === 'auto') {
+            curZoom = parseFloat(zPc && zPc.style.zoom) || 1.0;
+        } else {
+            curZoom = parseFloat(zRaw);
+        }
+        if (!isFinite(curZoom) || curZoom <= 0) curZoom = 1.0;
 
         body.appendChild(makeGroup('Appearance', [
             makeRow('Theme', 'Light PDF · dark chrome',
@@ -739,10 +748,7 @@
         ]));
 
         // --- Behavior --------------------------------------------------
-        var renderAllOn  = localStorage.getItem('pdf2html-render-all') === '1';
         var counterVis   = localStorage.getItem('pdf2html-pageno-hidden') === '0';
-        var curBuffer    = parseInt(localStorage.getItem('pdf2html-buffer') || '10', 10);
-        if (isNaN(curBuffer)) curBuffer = 10;
         var curScrollOffPct = Math.round(
             (parseFloat(localStorage.getItem('pdf2html-scrolloff') || '0.25')) * 100);
         var pinnedOn = localStorage.getItem('pdf2html-pinned') !== '0';
@@ -783,26 +789,12 @@
         };
 
         body.appendChild(makeGroup('Behavior', [
-            makeRow('Render all pages', ':all · heavy for long docs',
-                makeSwitch(renderAllOn, function (on) {
-                    setCheckboxAndFire('pdf2html-all-input', on);
-                })),
             makeRow('Page counter visible', 'Top pill; toggles with ⌘⇧. or :counter',
                 makeSwitch(counterVis, function (on) {
                     var isHidden = document.body.classList.contains('pageno-hidden');
                     if ((on && isHidden) || (!on && !isHidden)) {
                         if (window.__pdf2htmlTogglePageno) window.__pdf2htmlTogglePageno();
                     }
-                })),
-            makeRow('Render buffer', 'Pages kept rendered ±N around viewport',
-                makeSeg([
-                    { value: 5,  label: '±5'  },
-                    { value: 10, label: '±10' },
-                    { value: 20, label: '±20' },
-                    { value: 50, label: '±50' },
-                    { value: 100, label: '±100' },
-                ], curBuffer, function (v) {
-                    setInputValueAndFire('pdf2html-buffer-input', v);
                 })),
             makeRow('Scrolloff', 'Auto-scroll when cursor enters ±N% band',
                 soWrap),
@@ -904,25 +896,83 @@
 
 
     // ------------------------------------------------------------------------
-    // Default zoom — pdf2htmlEX emits pages at the PDF's native size (~595px
-    // wide for A4), which leaves huge margins on a modern wide viewport.
-    // Apply a CSS `zoom` to #page-container on load so the default view
-    // fills more of the screen, closer to Chrome's fit-to-width. Persist to
-    // localStorage; tweak via `:zoom 1.8` palette command.
+    // Default zoom — pdf2htmlEX emits pages at the PDF's native CSS-pixel
+    // size (1 PDF pt ≈ 1 px), which varies wildly: A4 ≈ 595px, US Letter
+    // 612px, 16:9 slide deck 1920px, posters even more. A fixed multiplier
+    // is wrong across that range, so default to auto-fit-to-viewport:
+    // pick a zoom that makes the first page occupy ~85% of #page-container
+    // width. Stored values are either the sentinel 'auto' (default) or a
+    // raw numeric multiplier set via `:zoom N` / settings slider; `:zoom
+    // auto` returns to fit mode.
+    //
+    // Persistence is per-document, mirroring mountResumePosition:
+    //   pdf2html-zoom:<hash>  — this doc's setting (preferred)
+    //   pdf2html-zoom         — global fallback / no-hash docs
     // ------------------------------------------------------------------------
+    var ZOOM_KEY_GLOBAL = 'pdf2html-zoom';
+    function zoomKey() {
+        var h = entryHash();
+        return h ? ZOOM_KEY_GLOBAL + ':' + h : null;
+    }
+    function readZoomPref() {
+        var k = zoomKey();
+        var v = k ? localStorage.getItem(k) : null;
+        if (v !== null) return v;
+        return localStorage.getItem(ZOOM_KEY_GLOBAL);
+    }
+    function writeZoomPref(v) {
+        var k = zoomKey() || ZOOM_KEY_GLOBAL;
+        localStorage.setItem(k, v);
+    }
+
     function mountZoom() {
         var pc = document.getElementById('page-container');
         if (!pc) return;
-        var raw = localStorage.getItem('pdf2html-zoom');
-        var z = raw !== null ? parseFloat(raw) : 1.4;
-        if (!isFinite(z) || z <= 0) z = 1.4;
+        // Read native page width BEFORE any zoom is applied — `style.zoom`
+        // mutates child getBoundingClientRect values in CSS pixels.
+        var firstPf = pc.querySelector('.pf');
+        var pageWidth = firstPf ? firstPf.getBoundingClientRect().width : 0;
+
+        function autoFitZoom() {
+            var vw = pc.clientWidth;
+            if (!pageWidth || !vw) return 1.0;
+            var z = 0.85 * vw / pageWidth;
+            if (z < 0.5) z = 0.5;
+            if (z > 3.0) z = 3.0;
+            return z;
+        }
+
+        var raw = readZoomPref();
+        var mode = (raw === null || raw === 'auto') ? 'auto' : 'manual';
+        var z = (mode === 'auto') ? autoFitZoom() : parseFloat(raw);
+        if (!isFinite(z) || z <= 0) { z = autoFitZoom(); mode = 'auto'; }
         pc.style.zoom = String(z);
 
         window.__pdf2htmlSetZoom = function (n) {
-            if (!isFinite(n) || n <= 0 || n > 10) return;
-            pc.style.zoom = String(n);
-            localStorage.setItem('pdf2html-zoom', String(n));
+            if (n === 'auto') {
+                mode = 'auto';
+                writeZoomPref('auto');
+                pc.style.zoom = String(autoFitZoom());
+                return;
+            }
+            var num = (typeof n === 'number') ? n : parseFloat(n);
+            if (!isFinite(num) || num <= 0 || num > 10) return;
+            mode = 'manual';
+            pc.style.zoom = String(num);
+            writeZoomPref(String(num));
         };
+
+        // Re-fit on viewport resize when in auto mode. rAF-throttled so a
+        // drag-resize doesn't trigger a storm of style.zoom writes.
+        var pending = false;
+        window.addEventListener('resize', function () {
+            if (mode !== 'auto' || pending) return;
+            pending = true;
+            requestAnimationFrame(function () {
+                pending = false;
+                if (mode === 'auto') pc.style.zoom = String(autoFitZoom());
+            });
+        });
     }
 
 
@@ -1269,7 +1319,7 @@
                     + cRow(':yank <kind>', ':y', 'Copy ref / page / chapter / document')
                     + cRow(':finger', ':f', 'Hint visible URL / DOI / ISBN / ID tokens')
                     + cRow(':counter', ':num', 'Toggle page counter')
-                    + cRow(':zoom N', '—', 'Set page-container zoom')
+                    + cRow(':zoom N | auto', '—', 'Set page-container zoom (auto = fit-to-width)')
                     + cRow(':help', ':h', 'Open this cheatsheet')
                 + '</div>'
             + '</div>'
@@ -1397,6 +1447,30 @@
     // converted, so the next click goes back through the regular pipeline.
     // Uses location.replace so the just-deleted /<hash>/... URL doesn't sit
     // in history pointing at a 404.
+    // Resolve the current entry's display name (the html.stem on disk,
+    // which is what `:open` / ⌘K filter on). Reading document.title is
+    // unreliable — Comet, Vimium, and other extensions mutate it at
+    // runtime (we've seen e.g. a "<page>. " prefix appear). Trust the
+    // URL pathname instead; for /view?path= cases, fall back to the
+    // already-loaded library cache. Empty string when neither works —
+    // the wildmenu just hides the suggestion rather than offering a
+    // wrong default.
+    function currentEntryName() {
+        var m = location.pathname.match(/^\/[a-f0-9]{6,32}\/(.+)\.html?$/i);
+        if (m) {
+            try { return decodeURIComponent(m[1]); } catch (_) { return m[1]; }
+        }
+        var hash = entryHash();
+        if (hash && libraryEntries) {
+            for (var i = 0; i < libraryEntries.length; i++) {
+                if (libraryEntries[i].hash === hash) {
+                    return String(libraryEntries[i].name || '');
+                }
+            }
+        }
+        return '';
+    }
+
     // Rename this entry's HTML file so its search name (the stem the
     // daemon returns from /library, the same one ⌘K + `:open` filter on)
     // becomes `newName`. The overlay patches document.title locally so
@@ -1680,15 +1754,6 @@
         { name: 'scrolloff', aliases: ['so'], desc: 'scrolloff N% (0-50)',
           argCompleter: function (tail) { return prefixFilter(['0', '10', '25', '33', '50'], tail); },
           handler: function (a) { if (a !== undefined) setInputValueAndFire('pdf2html-scrolloff-input', parseInt(a, 10)); } },
-        { name: 'buffer',  aliases: ['buf'],  desc: 'render ±N pages',
-          argCompleter: function (tail) { return prefixFilter(['5', '10', '20', '50'], tail); },
-          handler: function (a) { if (a !== undefined) setInputValueAndFire('pdf2html-buffer-input', parseInt(a, 10)); } },
-        { name: 'all',     aliases: [],
-          desc: function () {
-              return 'turn render-all ' + (localStorage.getItem('pdf2html-render-all') === '1' ? 'OFF' : 'ON');
-          },
-          argCompleter: null,
-          handler: function () { toggleCheckboxAndFire('pdf2html-all-input'); } },
         { name: 'yank',    aliases: ['y'],    desc: 'copy content (ref/page/chapter/doc)',
           argCompleter: function (tail) {
               // Order: ref → document → chapter → page. Reversed in spirit
@@ -1735,9 +1800,12 @@
         { name: 'prev',    aliases: [],       desc: 'prev chapter (or chapter start)',
           argCompleter: null,
           handler: function () { gotoChapterBy(-1); } },
-        { name: 'zoom',    aliases: [],       desc: 'set zoom N',
-          argCompleter: function (tail) { return prefixFilter(['1.0', '1.2', '1.4', '1.6', '1.8', '2.0', '2.5'], tail); },
-          handler: function (a) { if (a !== undefined && window.__pdf2htmlSetZoom) window.__pdf2htmlSetZoom(parseFloat(a)); } },
+        { name: 'zoom',    aliases: [],       desc: 'set zoom N (or auto)',
+          argCompleter: function (tail) { return prefixFilter(['auto', '1.0', '1.2', '1.4', '1.6', '1.8', '2.0', '2.5'], tail); },
+          handler: function (a) {
+              if (a === undefined || !window.__pdf2htmlSetZoom) return;
+              window.__pdf2htmlSetZoom(a === 'auto' ? 'auto' : parseFloat(a));
+          } },
         { name: 'open',    aliases: ['o'],    desc: 'open another cached doc',
           argCompleter: function (tail) {
               var matched = completeLibraryEntries(tail);
@@ -1759,11 +1827,11 @@
           handler: function () { openSettings(); } },
         { name: 'rename',  aliases: ['rn'],
           desc: function () {
-              var current = (document.title || '').trim();
+              var current = currentEntryName();
               return current ? 'rename "' + current + '"' : 'rename this PDF';
           },
           argCompleter: function (tail) {
-              var current = (document.title || '').trim();
+              var current = currentEntryName();
               if (!current) return [];
               // Only seed the current name when the arg is empty —
               // `:rename<Tab>` autofills, then user edits freely. Showing
@@ -2097,16 +2165,6 @@
         };
     }
 
-    function ensurePageRangeRendered(startPage, endPage) {
-        if (!startPage || !endPage) return;
-        var from = Math.min(startPage, endPage);
-        var to = Math.max(startPage, endPage);
-        for (var p = from; p <= to; p++) {
-            var pf = pageElement(p);
-            if (pf) pf.classList.add('pdf2html-force');
-        }
-    }
-
     function selectionPageSpan(sel) {
         if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return null;
         var anchorPage = pageNumberFromNode(sel.anchorNode);
@@ -2130,7 +2188,6 @@
         if (targetPage === span.focus) return true;
         var pos = pageTextBoundaryPosition(targetPage, delta > 0);
         if (!pos) return false;
-        ensurePageRangeRendered(span.anchor, targetPage);
         document.body.classList.remove('pdf2html-search-entered');
         try {
             sel.extend(pos.node, pos.offset);
@@ -2170,7 +2227,6 @@
         var startPos = pageTextBoundaryPosition(chapter.start, true);
         var endPos = pageTextBoundaryPosition(chapter.end - 1, false);
         if (!startPos || !endPos) return false;
-        ensurePageRangeRendered(chapter.start, chapter.end - 1);
         document.body.classList.remove('pdf2html-search-entered');
         try {
             // Chapter-promotion is a selection reshape. Let the browser's own
@@ -3288,23 +3344,6 @@
     }
 
     // ------------------------------------------------------------------------
-    // Render-all quick toggle (A key) — fires change on the sidebar checkbox
-    // so all persistence and rendering logic happens via the normal path.
-    // ------------------------------------------------------------------------
-    function registerRenderAllHandler() {
-        document.addEventListener('keydown', function (e) {
-            if (e.key !== 'A') return;
-            if (isInputTarget(e.target)) return;
-            var cb = document.getElementById('pdf2html-all-input');
-            if (!cb) return;
-            e.preventDefault();
-            cb.checked = !cb.checked;
-            cb.dispatchEvent(new Event('change'));
-        });
-    }
-
-
-    // ------------------------------------------------------------------------
     // Count-prefix motion handler — the overlay's only count-prefix binding.
     //   e / q / E : +1 / -1 / -1 page (10e = +10 pages, 10q = -10 pages)
     //   c / C : ±1 chapter (10c = +10 chapters, 10C = -10 chapters)
@@ -3458,140 +3497,25 @@
 
 
     // ------------------------------------------------------------------------
-    // Rolling render window — uses IntersectionObserver, so it's zoom-robust
-    // (browser manages root geometry itself, no cached page offsets to go stale).
+    // Render window — now CSS-only via `content-visibility: auto` on `.pf`
+    // (see overlay.css). The browser handles paint-skipping for offscreen
+    // pages; the entire DOM stays in the layout tree so native Cmd-F can
+    // index it. This mount is left as the install point for the hidden
+    // settings inputs (scrolloff, pin) that the palette and settings modal
+    // dispatch `change` events on.
     //
-    // Also owns the sidebar config panel (Render all / buffer / scrolloff / pin).
+    // Historically this also toggled `.pdf2html-force` per page to gate
+    // `.pc { display: none }`; that whole mechanism was deleted with
+    // ADR 0009 because it broke native browser find.
     // ------------------------------------------------------------------------
     function mountRenderWindow() {
-        var container = document.getElementById('page-container');
-        if (!container) return;
-        var pages = Array.prototype.slice.call(container.querySelectorAll('.pf'));
-        if (!pages.length) return;
-
-        var buffer = parseInt(localStorage.getItem('pdf2html-buffer') || '10', 10);
-        if (isNaN(buffer) || buffer < 0) buffer = 10;
-        var renderAll = localStorage.getItem('pdf2html-render-all') === '1';
-
-        var idx = new Map();
-        pages.forEach(function (p, i) { idx.set(p, i); });
-        var visible = new Set();
-        var selectionSpan = null;
-        var raf = null;
-        var allForced = false;
-
-        function apply() {
-            // Render-all: force every page once, then short-circuit — avoids
-            // touching the DOM 797 times per observer callback during scroll.
-            if (renderAll) {
-                if (allForced) return;
-                for (var i = 0; i < pages.length; i++) pages[i].classList.add('pdf2html-force');
-                allForced = true;
-                return;
-            }
-            allForced = false;
-
-            var from, to;
-            if (visible.size === 0) {
-                from = 0;
-                to = Math.min(pages.length - 1, buffer);
-            } else {
-                var first = Infinity, last = -1;
-                visible.forEach(function (i) {
-                    if (i < first) first = i;
-                    if (i > last) last = i;
-                });
-                from = Math.max(0, first - buffer);
-                to = Math.min(pages.length - 1, last + buffer);
-            }
-            if (selectionSpan) {
-                from = Math.min(from, selectionSpan.start - 1);
-                to = Math.max(to, selectionSpan.end - 1);
-            }
-            for (var j = 0; j < pages.length; j++) {
-                var want = j >= from && j <= to;
-                if (want !== pages[j].classList.contains('pdf2html-force')) {
-                    pages[j].classList.toggle('pdf2html-force', want);
-                }
-            }
-        }
-
-        function syncSelectionSpan() {
-            var next = selectionPageSpan(document.getSelection());
-            var changed = !selectionSpan !== !next
-                || (selectionSpan && next
-                    && (selectionSpan.start !== next.start || selectionSpan.end !== next.end));
-            if (!changed) return;
-            selectionSpan = next;
-            sched();
-        }
-
-        function sched() {
-            if (raf) return;
-            raf = requestAnimationFrame(function () { raf = null; apply(); });
-        }
-
-        var observer = new IntersectionObserver(function (entries) {
-            for (var i = 0; i < entries.length; i++) {
-                var n = idx.get(entries[i].target);
-                if (n === undefined) continue;
-                if (entries[i].isIntersecting) visible.add(n);
-                else visible.delete(n);
-            }
-            sched();
-        }, {
-            root: container,
-            rootMargin: '-20px 0px',  // discount slivers of pages peeking at edges
-            threshold: 0,
-        });
-        pages.forEach(function (p) { observer.observe(p); });
-        document.addEventListener('selectionchange', syncSelectionSpan);
-
-        mountConfigPanel(buffer, renderAll, function (newBuffer) {
-            buffer = newBuffer;
-            sched();
-        }, function (newAll) {
-            renderAll = newAll;
-            sched();
-        });
-        syncSelectionSpan();
-    }
-
-    // The settings modal and palette commands talk to state through these
-    // three hidden inputs — they persist changes and fan out to the live
-    // render window / pin system via the `change` event. Keeping them as
-    // DOM elements (rather than pure variables) preserves the existing
-    // setInputValueAndFire / toggleCheckboxAndFire plumbing the palette
-    // already uses.
-    function mountConfigPanel(initialBuffer, initialRenderAll, onBuffer, onAll) {
         var host = document.createElement('div');
         host.id = 'pdf2html-hidden-controls';
         host.setAttribute('aria-hidden', 'true');
         host.innerHTML =
-            '<input type="checkbox" id="pdf2html-all-input">' +
-            '<input type="number" id="pdf2html-buffer-input" min="0" max="2000">' +
             '<input type="number" id="pdf2html-scrolloff-input" min="0" max="50" step="1">' +
             '<input type="checkbox" id="pdf2html-pinned-input">';
         document.body.appendChild(host);
-
-        var bufferInput = document.getElementById('pdf2html-buffer-input');
-        bufferInput.value = initialBuffer;
-        bufferInput.disabled = initialRenderAll;
-        bufferInput.addEventListener('change', function () {
-            var n = parseInt(bufferInput.value, 10);
-            if (isNaN(n) || n < 0) n = 10;
-            localStorage.setItem('pdf2html-buffer', String(n));
-            onBuffer(n);
-        });
-
-        var allInput = document.getElementById('pdf2html-all-input');
-        allInput.checked = initialRenderAll;
-        allInput.addEventListener('change', function () {
-            var on = allInput.checked;
-            localStorage.setItem('pdf2html-render-all', on ? '1' : '0');
-            bufferInput.disabled = on;
-            onAll(on);
-        });
 
         var scrollOffInput = document.getElementById('pdf2html-scrolloff-input');
         scrollOffInput.value = Math.round(scrollOffFraction * 100);
@@ -4171,9 +4095,10 @@
         } catch (e) { /* Highlight API unsupported — nothing to clear */ }
     }
 
-    // Scope rule: only pages currently intersecting the viewport AND actually
-    // rendered (.pdf2html-force). Collapsed .pc elements contain no selectable
-    // text anyway, so skipping them is free.
+    // Scope rule: only pages currently intersecting the viewport. Under
+    // content-visibility: auto, off-viewport pages still have their text in the
+    // DOM (so native Cmd-F sees them), but the `/` overlay deliberately scopes
+    // to what the user is actually looking at — the rect check is the contract.
     function visiblePageFrames() {
         var pc = document.getElementById('page-container');
         if (!pc) return [];
@@ -4182,7 +4107,6 @@
         var pages = pc.querySelectorAll('.pf');
         for (var i = 0; i < pages.length; i++) {
             var pf = pages[i];
-            if (!pf.classList.contains('pdf2html-force')) continue;
             var r = pf.getBoundingClientRect();
             if (r.bottom < pcRect.top || r.top > pcRect.bottom) continue;
             out.push(pf);
@@ -4333,298 +4257,6 @@
             ? String(searchState.activeIdx + 1)
             : '·';
         cEl.textContent = cur + ' / ' + n;
-    }
-
-
-    // ------------------------------------------------------------------------
-    // Native browser find shadow layer — Cmd-F across the full document without
-    // render-all.
-    //
-    // Chromium's native find skips text under display:none. Our render window
-    // deliberately hides non-buffered `.pc` elements that way, so Cmd-F only
-    // sees the current render buffer. Conversion/cache-upgrade writes
-    // <hash>/text.json with one plain-text blob per page; this mounts those
-    // blobs as clipped 1px nodes under the matching `.pf` wrappers. They stay
-    // in layout for browser-find indexing, but they do not paint or affect the
-    // pdf2htmlEX visible layer.
-    //
-    // Rendered pages hide their shadow node via CSS, so native find sees one
-    // source per page: real `.pc` text when rendered, shadow text otherwise.
-    // Selection bridging below promotes shadow hits to real `.t` ranges after
-    // native find has used the shadow layer to discover the page.
-    // ------------------------------------------------------------------------
-    function mountNativeFindShadowLayer() {
-        var hash = entryHash();
-        var container = document.getElementById('page-container');
-        if (!hash || !container) return;
-        mountNativeFindSelectionBridge();
-
-        fetch('/' + hash + '/text.json', { cache: 'no-store' }).then(function (r) {
-            return r.ok ? r.json() : null;
-        }).then(function (payload) {
-            if (!payload || payload.version !== 1 || !Array.isArray(payload.pages)) return;
-            mountFindShadowPages(payload.pages);
-        }).catch(function () { /* Missing text.json is non-fatal for old cache entries. */ });
-    }
-
-    function mountFindShadowPages(pages) {
-        var queue = [];
-        for (var i = 0; i < pages.length; i++) {
-            var page = parseInt(pages[i] && pages[i].page, 10);
-            var text = pages[i] && pages[i].text;
-            if (!page || typeof text !== 'string' || !text.trim()) continue;
-            queue.push({ page: page, text: text });
-        }
-        if (!queue.length) return;
-
-        var idx = 0;
-        function work(deadline) {
-            var start = performance.now();
-            while (idx < queue.length) {
-                mountFindShadowPage(queue[idx].page, queue[idx].text);
-                idx += 1;
-
-                // Keep startup responsive on large textbooks. requestIdleCallback
-                // gives us a real budget; the timeout fallback caps each slice.
-                if (deadline && deadline.timeRemaining && deadline.timeRemaining() < 2) break;
-                if (!deadline && performance.now() - start > 8) break;
-            }
-            if (idx < queue.length) scheduleIdle(work);
-            else document.body.classList.add('pdf2html-find-shadow-ready');
-        }
-        scheduleIdle(work);
-    }
-
-    function mountFindShadowPage(page, text) {
-        var pf = pageElement(page);
-        if (!pf) return;
-        var existing = pf.querySelector('.pdf2html-find-shadow');
-        if (existing && existing.parentElement === pf) return;
-
-        var shadow = document.createElement('div');
-        shadow.className = 'pdf2html-find-shadow';
-        shadow.setAttribute('aria-hidden', 'true');
-        shadow.dataset.pageNo = String(page);
-        shadow.textContent = text;
-        pf.appendChild(shadow);
-    }
-
-    var nativeFindBridgeMounted = false;
-    var nativeFindBridgeActive = false;
-    var nativeFindBridgeSeq = 0;
-    var nativeFindPageIndexCache = new WeakMap();
-
-    function mountNativeFindSelectionBridge() {
-        if (nativeFindBridgeMounted) return;
-        nativeFindBridgeMounted = true;
-
-        document.addEventListener('selectionchange', function () {
-            if (nativeFindBridgeActive) return;
-            var sel = window.getSelection();
-            if (!sel || !sel.rangeCount || !sel.anchorNode) return;
-
-            var range = sel.getRangeAt(0);
-            var shadow = shadowElementForRange(range);
-            if (!shadow) return;
-
-            var selectedText = sel.toString();
-            if (!selectedText) return;
-
-            var startOffset = rangeOffsetInside(shadow, range);
-            if (startOffset == null) return;
-
-            var page = parseInt(shadow.dataset.pageNo || '', 10);
-            if (!page) return;
-
-            var seq = ++nativeFindBridgeSeq;
-            requestAnimationFrame(function () {
-                if (seq !== nativeFindBridgeSeq) return;
-                promoteNativeFindShadowSelection(page, selectedText, startOffset);
-            });
-        });
-    }
-
-    function shadowElementForRange(range) {
-        var a = nodeElement(range.startContainer);
-        var b = nodeElement(range.endContainer);
-        var sa = a && a.closest ? a.closest('.pdf2html-find-shadow') : null;
-        var sb = b && b.closest ? b.closest('.pdf2html-find-shadow') : null;
-        return sa && sa === sb ? sa : null;
-    }
-
-    function nodeElement(node) {
-        if (!node) return null;
-        return node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
-    }
-
-    function rangeOffsetInside(root, range) {
-        try {
-            var pre = document.createRange();
-            pre.selectNodeContents(root);
-            pre.setEnd(range.startContainer, range.startOffset);
-            return pre.toString().length;
-        } catch (e) {
-            return null;
-        }
-    }
-
-    function promoteNativeFindShadowSelection(page, selectedText, shadowStartOffset) {
-        var pf = pageElement(page);
-        if (!pf) return;
-        var pc = pf.querySelector('.pc');
-        var shadow = pf.querySelector('.pdf2html-find-shadow');
-        if (!pc || !shadow) return;
-
-        var occurrence = occurrenceIndexBefore(
-            shadow.textContent || '', selectedText, shadowStartOffset);
-
-        var index = buildRealPageTextIndex(pc);
-        var start = nthIndexOf(index.text, selectedText, occurrence);
-        if (start < 0) start = index.text.indexOf(selectedText);
-        if (start < 0) return;
-
-        var realRange = realRangeFromIndex(index, start, selectedText.length);
-        if (!realRange) return;
-
-        // Close the race where native find selectionchange fires before the
-        // IntersectionObserver render-window has force-rendered the target.
-        // Do this only after mapping succeeds; otherwise the page's shadow
-        // node would become display:none while still owning the active native
-        // find selection.
-        pf.classList.add('pdf2html-force');
-
-        nativeFindBridgeActive = true;
-        searchSuppressPinUntil = performance.now() + 500;
-        try {
-            var sel = window.getSelection();
-            if (sel) {
-                sel.removeAllRanges();
-                sel.addRange(realRange);
-            }
-            scrollRealRangeIntoView(realRange);
-        } catch (e) {
-            // Leave the browser's native shadow selection alone if the real
-            // page range detached while rendering settled.
-        } finally {
-            setTimeout(function () { nativeFindBridgeActive = false; }, 0);
-        }
-    }
-
-    function occurrenceIndexBefore(text, needle, offset) {
-        if (!needle) return 0;
-        var n = 0;
-        var cursor = 0;
-        var idx;
-        while ((idx = text.indexOf(needle, cursor)) !== -1 && idx < offset) {
-            n += 1;
-            cursor = idx + needle.length;
-        }
-        return n;
-    }
-
-    function nthIndexOf(text, needle, occurrence) {
-        if (!needle) return -1;
-        var cursor = 0;
-        var idx = -1;
-        for (var i = 0; i <= occurrence; i++) {
-            idx = text.indexOf(needle, cursor);
-            if (idx === -1) return -1;
-            cursor = idx + needle.length;
-        }
-        return idx;
-    }
-
-    function buildRealPageTextIndex(pc) {
-        var cached = nativeFindPageIndexCache.get(pc);
-        if (cached) return cached;
-
-        var text = '';
-        var map = [];
-        var lines = pc.querySelectorAll('.t');
-
-        function appendMapped(raw, nodes) {
-            var start = raw.search(/\S/);
-            if (start === -1) return;
-            var end = raw.length;
-            while (end > start && /\s/.test(raw.charAt(end - 1))) end--;
-            if (text) {
-                text += '\n';
-                map.push(null);
-            }
-            for (var i = start; i < end; i++) {
-                text += raw.charAt(i);
-                map.push(nodes[i] || null);
-            }
-        }
-
-        for (var i = 0; i < lines.length; i++) {
-            var raw = '';
-            var nodes = [];
-            var walker = document.createTreeWalker(lines[i], NodeFilter.SHOW_TEXT);
-            var node;
-            while ((node = walker.nextNode())) {
-                for (var j = 0; j < node.nodeValue.length; j++) {
-                    raw += node.nodeValue.charAt(j);
-                    nodes.push({ node: node, offset: j });
-                }
-            }
-            appendMapped(raw, nodes);
-        }
-
-        if (!lines.length) {
-            var fallback = document.createTreeWalker(pc, NodeFilter.SHOW_TEXT);
-            var fnode;
-            while ((fnode = fallback.nextNode())) {
-                for (var k = 0; k < fnode.nodeValue.length; k++) {
-                    text += fnode.nodeValue.charAt(k);
-                    map.push({ node: fnode, offset: k });
-                }
-            }
-        }
-
-        var out = { text: text, map: map };
-        nativeFindPageIndexCache.set(pc, out);
-        return out;
-    }
-
-    function realRangeFromIndex(index, start, length) {
-        var map = index.map;
-        var end = start + length - 1;
-        if (start < 0 || end >= map.length) return null;
-
-        var first = null;
-        var last = null;
-        for (var i = start; i <= end; i++) {
-            if (!first && map[i]) first = map[i];
-            if (map[i]) last = map[i];
-        }
-        if (!first || !last) return null;
-
-        var r = document.createRange();
-        try {
-            r.setStart(first.node, first.offset);
-            r.setEnd(last.node, last.offset + 1);
-            return r;
-        } catch (e) {
-            return null;
-        }
-    }
-
-    function scrollRealRangeIntoView(range) {
-        var pc = document.getElementById('page-container');
-        if (!pc) return;
-        var rect = range.getBoundingClientRect();
-        if (rect.top === 0 && rect.bottom === 0 && rect.left === 0) return;
-        var delta = scrollDeltaForRect(pc, rect);
-        if (Math.abs(delta) >= 1) pc.scrollBy({ top: delta, behavior: 'smooth' });
-    }
-
-    function scheduleIdle(fn) {
-        if (window.requestIdleCallback) {
-            window.requestIdleCallback(fn, { timeout: 500 });
-        } else {
-            setTimeout(function () { fn(null); }, 0);
-        }
     }
 
 

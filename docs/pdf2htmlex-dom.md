@@ -80,10 +80,10 @@ parseInt(el.id.match(/pf([0-9a-f]+)/i)[1], 16)
 - Always direct child of `#page-container`
 - `w0 h0` reference size classes (see "Utility classes" below) — width/height
   of this specific page. Some docs mix page sizes; `w1 h1` etc. may appear.
-- The `.pf` itself is always laid out and takes full page space — it's the
-  `.pc` inside that our visibility-toggle acts on.
-- Our `.pdf2html-force` class is applied/removed here, to the `.pf`, not
-  the `.pc`.
+- The `.pf` itself is always laid out and takes full page space.
+- Carries `content-visibility: auto` (overlay.css) — the browser skips
+  paint+layout for offscreen pages but keeps their text in the DOM so
+  native Cmd-F can index it. See ADR 0009.
 
 ## `.pc` — page content (inner content wrapper)
 
@@ -97,11 +97,13 @@ parseInt(el.id.match(/pf([0-9a-f]+)/i)[1], 16)
 </div>
 ```
 
-- **This** is the element hidden/shown by our CSS:
-  - `.pf > .pc { display: none !important; }` — baseline hidden
-  - `.pf.pdf2html-force > .pc { display: block !important; }` — shown when forced
 - Contains everything that actually paints: background image (`.bi`),
   canvas group (`.c`), and the text lines (`.t`).
+- We no longer gate `.pc` visibility per page — `content-visibility: auto`
+  on the parent `.pf` (overlay.css) lets the browser handle paint
+  skipping while keeping text findable. ADR 0009 supersedes the old
+  `.pf > .pc { display:none }` / `.pf.pdf2html-force > .pc { display:block }`
+  contract.
 - `pc1` suffix is the page-style index when multiple page sizes coexist.
 
 ## `.t` — text line
@@ -204,8 +206,8 @@ The only time they matter is if you're building a selector like
 |---|---|
 | Iterate all pages | `container.querySelectorAll('.pf')` |
 | Scroll to a specific page | `document.getElementById('pf' + n.toString(16)).scrollIntoView({block:'start'})` |
-| Force-show a page | add class `pdf2html-force` to the `.pf` (not the `.pc`) |
-| Observe page visibility | IntersectionObserver with `root: #page-container`, observing each `.pf` |
+| Force-show a page | unnecessary — `content-visibility: auto` auto-renders pages near the viewport. |
+| Observe page visibility | IntersectionObserver with `root: #page-container`, observing each `.pf` (still useful for outline tracker, page counter, etc.; visibility is no longer JS-controlled) |
 | Find current reading page | `document.elementFromPoint(viewport_center)`, walk up to `.pf` — **zoom-robust**, preferred. |
 | Iterate outline entries | `outline.querySelectorAll('a[href^="#pf"]')` — captures `a.l` entries cleanly |
 | Get selection's current focus | `window.getSelection().focusNode` → walk to `.t` parent if you need the line element |

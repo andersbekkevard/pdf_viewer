@@ -1,7 +1,14 @@
 # ADR 0007 — Native browser find via cached shadow text
 
-**Status**: Accepted
+**Status**: Superseded by [ADR 0009](0009-native-find-via-content-visibility.md)
 **Date**: 2026-04-24
+**Superseded**: 2026-05-09
+
+> The shadow-layer architecture below was deleted because it produced
+> match-position errors, count flicker, and silent bridge failures on real
+> documents. See ADR 0009 for the replacement (`content-visibility: auto`
+> on `.pf`, native Cmd-F over real DOM text). The text below is preserved
+> verbatim for historical context.
 
 ## Context
 

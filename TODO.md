@@ -2,7 +2,7 @@
 - [ ] Maybe UI for eviction in :open
 - [x] Fix overview navigation / selection polish: clicking an outline entry should immediately move the highlighted active chapter in the outline, and in the overview/pages surface `j` / `k` should move between entries with `Enter` selecting the focused one.
 - [ ] Make fingers select more things 
-- [x] Explore native `Cmd+F` over the whole document via a per-page shadow text layer; start with V1, likely continue to V2 after validating Chromium behavior. See [docs/native-browser-find-shadow-layer.md](docs/native-browser-find-shadow-layer.md).
+- [x] Native `Cmd+F` over the whole document. First attempt used a per-page shadow text layer (V1, ADR 0007); produced ghost matches and broken scroll targeting. Replaced with `content-visibility: auto` on `.pf` (ADR 0009).
 - [ ] 1063 vs 1073 "Internet" in KTN pensumbok: Why
 
 - [ ] Acutually integrate with/fork pdf2htmlEX. There is obviously a lot of additional value in integrating with pdf2htmlEX.

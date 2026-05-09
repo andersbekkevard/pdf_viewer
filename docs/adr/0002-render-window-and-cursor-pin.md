@@ -1,7 +1,18 @@
 # ADR 0002 — Rolling render window + cursor pin
 
-**Status**: Accepted
+**Status**: §A superseded by [ADR 0009](0009-native-find-via-content-visibility.md); §B superseded by [ADR 0006](0006-scrolloff-css-padding-plus-js-fallback.md).
 **Date**: 2026-04-21
+
+> **§A note (2026-05-09)**: the `.pf > .pc { display: none }` /
+> `.pf.pdf2html-force > .pc { display: block }` IntersectionObserver-driven
+> render window described below was deleted because `display:none` text is
+> not findable by Chromium's native Cmd-F, and the surrogate text layer
+> from ADR 0007 that papered over that produced ghost matches in practice.
+> ADR 0009 replaces both with `.pf { content-visibility: auto }` plus an
+> unconditional `.pf > .pc { display: block !important }` (the latter
+> defeats pdf2htmlEX's own injected hide-stylesheet, which the old
+> `.pdf2html-force` opt-in used to defeat). The §A text below is preserved
+> verbatim for historical context.
 
 ## Context
 

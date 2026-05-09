@@ -108,22 +108,26 @@ explicitly.
   on load (`window.pdf2htmlEX.defaultViewer.render_timer = null`,
   `render = () => {}`). If rendering goes glitchy after an upgrade,
   verify this is still succeeding.
-- **Class-based `!important` beats pdf2htmlEX's inline style.** The
-  `.pf > .pc { display: none !important }` +
-  `.pf.pdf2html-force > .pc { display: block !important }` pair is
-  the visibility contract. Don't refactor to inline `.style.display` —
-  pdf2htmlEX's leftover runtime would race us.
-- **Do NOT add `contain: layout paint style` to `.pf`.** Tried it;
-  caused paint flash on scroll with 797-page docs due to 797-layer
-  compositor churn. See ADR 0002.
-- **In render-all mode, `apply()` must short-circuit via the
-  `allForced` flag.** Iterating 797 pages in `classList.contains()`
-  on post-scroll frames forces style recalc and causes visible flash.
-- **IntersectionObserver is zoom-robust; cached offsets are not.**
-  Any new logic that needs to know "which page is visible" should use
-  the observer pattern in `mountRenderWindow`, not
-  `offsetTop`/`offsetHeight` reads. The outline tracker is an
-  intentional exception (wrong highlight is cosmetic).
+- **Render-window is now CSS-only.** `.pf { content-visibility: auto }`
+  in `assets/overlay.css` lets the browser skip paint+layout for
+  offscreen pages while keeping their text in the layout tree, which is
+  what makes native Cmd-F work end-to-end. Don't reintroduce
+  `.pc { display: none }` gating — Chromium find skips `display:none`
+  text and the surrogate-shadow architecture that papered over that
+  was deleted in ADR 0009.
+- **Don't add unconditional `contain: layout paint style` to `.pf`.**
+  ADR 0002 tried it (separate from `content-visibility: auto`) and saw
+  797-layer compositor churn on long docs. `content-visibility: auto`'s
+  containment is eligibility-driven and is fine; raw `contain` on every
+  page is not.
+- **`contain-intrinsic-size` reserves space for unrendered pages.**
+  Currently `auto 1100px`; the `auto` keyword lets the browser cache
+  each page's last-known size for stable scrollbar geometry. Tune per
+  page-size class (`pc1`, `pc2`, …) if zoom-induced reflow flashes.
+- **`elementFromPoint` is the zoom-robust way to ask "which page is
+  visible?".** Don't cache `offsetTop`/`offsetHeight` — they go stale
+  on `⌘+`/`⌘-`. The outline-active tracker is an intentional exception
+  (wrong highlight is cosmetic).
 - **Docker daemon is assumed OFF by default.** Scripts that need it
   fail fast with a clear "Docker daemon not running" error. Do not
   auto-start Docker from any script — see ADR 0004.

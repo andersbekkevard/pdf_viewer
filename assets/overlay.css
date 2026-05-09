@@ -163,39 +163,36 @@ body.pdf2html-search-entered ::-moz-selection { background: transparent; color: 
 
 
 /* ---- Render window control --------------------------------------------------
-   Baseline: every page's inner content (.pc) is hidden. overlay.js adds the
-   `pdf2html-force` class to .pf wrappers within the current buffer window;
-   the more-specific rule below wins and shows them.
+   `content-visibility: auto` lets the browser skip paint+layout for offscreen
+   pages while keeping their text in the layout tree — so native Cmd-F indexes
+   the entire document, lands on the real word with the standard highlight,
+   and we don't need a surrogate text layer.
 
-   DO NOT refactor to inline .style.display — pdf2htmlEX's leftover runtime
-   races us. See ADR / PLAN gotchas.
+   `contain-intrinsic-size: auto <h>` reserves space for unrendered pages so
+   the scrollbar and zoom math don't jump as pages enter/leave the viewport.
+   `auto` lets the browser remember each page's last-known size and use that
+   on subsequent renders, which is correct for the mixed page sizes
+   pdf2htmlEX emits.
+
+   DO NOT refactor to inline `.style.display` on `.pc` — pdf2htmlEX's leftover
+   runtime races us. See ADR 0002 / 0009.
    --------------------------------------------------------------------------- */
 
-.pf > .pc                     { display: none  !important; }
-.pf.pdf2html-force > .pc      { display: block !important; }
+.pf {
+    content-visibility: auto;
+    contain-intrinsic-size: auto 1100px;
+}
 
-/* Native browser find shadow layer.
-   Chromium find ignores `display:none`, which is why hidden `.pc` pages are
-   not searchable. The overlay appends one clipped plain-text node per page
-   from <hash>/text.json; it remains in layout for Cmd-F but does not paint,
-   intercept pointer events, or alter page sizing. */
-.pdf2html-find-shadow {
-    position: absolute;
-    top: 0;
-    left: 0;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    clip: rect(0 0 0 0);
-    clip-path: inset(50%);
-    white-space: pre-wrap;
-    pointer-events: none;
-    color: transparent;
-    background: transparent;
-}
-.pf.pdf2html-force > .pdf2html-find-shadow {
-    display: none !important;
-}
+/* pdf2htmlEX's runtime injects an `@media screen { .pc { display:none } }`
+   stylesheet on init and lazy-adds `.pc.opened` to reveal pages it picks
+   to render. We neutralize that runtime (killPdf2htmlExRenderLoop), so
+   `.opened` is never added to anything past the initial set; we have to
+   force `.pc` visible here or pages 3+ stay blank.
+
+   Paint cost for offscreen pages is now controlled by
+   `content-visibility: auto` on the parent `.pf` (above), not by gating
+   `.pc`. */
+.pf > .pc { display: block !important; }
 
 
 /* ---- Sidebar visibility + space-taking mode ----

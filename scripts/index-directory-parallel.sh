@@ -57,11 +57,10 @@ MAP_FILE="$CACHE_DIR/mappings.tsv"
 MAP_LOCK="$CACHE_DIR/.maplock"
 ASSET_LINK="$CACHE_DIR/_assets"
 IMAGE="pdf2htmlex/pdf2htmlex:0.18.8.rc2-master-20200820-ubuntu-20.04-x86_64"
-OVERLAY_VERSION=23
+OVERLAY_VERSION=24
 INJECTOR="$REPO_DIR/scripts/inject-overlay.py"
-TEXT_EXTRACTOR="$REPO_DIR/scripts/extract-find-text.py"
 
-export REPO_DIR CACHE_DIR LOG_FILE MAP_FILE MAP_LOCK ASSET_LINK IMAGE OVERLAY_VERSION INJECTOR TEXT_EXTRACTOR
+export REPO_DIR CACHE_DIR LOG_FILE MAP_FILE MAP_LOCK ASSET_LINK IMAGE OVERLAY_VERSION INJECTOR
 
 mkdir -p "$CACHE_DIR"
 
@@ -158,17 +157,6 @@ worker() {
     if [[ ! -f "$out_dir/meta.json" ]]; then
         "$REPO_DIR/scripts/extract-pdf-meta.sh" "$pdf" "$out_dir/meta.json" \
             >>"$LOG_FILE" 2>&1 || log "[fail-meta] $pdf"
-    fi
-
-    # Native Cmd-F support — generated from cached HTML, so cache hits created
-    # before this feature can be backfilled without reconversion.
-    if [[ ! -f "$out_dir/text.json" ]]; then
-        local final_html_for_text
-        final_html_for_text=$(ls "$out_dir"/*.html 2>/dev/null | head -1)
-        if [[ -n "$final_html_for_text" ]]; then
-            python3 "$TEXT_EXTRACTOR" "$final_html_for_text" "$out_dir/text.json" \
-                >>"$LOG_FILE" 2>&1 || log "[fail-find-text] $pdf"
-        fi
     fi
 
     # Upsert mapping under mutex. Busy-wait on mkdir — critical section is <50ms.
