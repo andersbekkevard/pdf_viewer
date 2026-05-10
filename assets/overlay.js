@@ -1312,6 +1312,7 @@
                     + cRow(':clear <a-z>', '—', 'Delete a bookmark')
                     + cRow(':open <doc>', ':o', 'Open another cached doc')
                     + cRow(':rename <name>', ':rn', 'Rename this PDF (Tab fills current name)')
+                    + cRow(':path', '—', 'Copy this PDF\'s source path / URL to clipboard')
                     + cRow(':pin', '—', 'Toggle pin-to-center')
                     + cRow(':scrolloff N', ':so', 'Scrolloff band at N% (e.g. :so 25)')
                     + cRow(':buffer N', ':buf', 'Render ±N pages around viewport')
@@ -1469,6 +1470,33 @@
             }
         }
         return '';
+    }
+
+    // Source ref of the current entry — local absolute path for files,
+    // http(s) URL for remote PDFs. Read from the in-memory library cache
+    // (loaded at init); empty string when the cache hasn't populated yet
+    // or the entry isn't recognized.
+    function currentSourceRef() {
+        var hash = entryHash();
+        if (!hash || !libraryEntries) return '';
+        for (var i = 0; i < libraryEntries.length; i++) {
+            if (libraryEntries[i].hash === hash) {
+                return String(libraryEntries[i].source_ref || '');
+            }
+        }
+        return '';
+    }
+
+    // Middle-ellipsis truncation. Long absolute paths (iCloud, nested
+    // course folders) hide their distinguishing tail under plain
+    // text-overflow, so we keep both ends and elide the middle.
+    function truncateMiddle(s, max) {
+        var v = String(s || '');
+        if (!v || v.length <= max) return v;
+        var keep = max - 1;
+        var head = Math.ceil(keep / 2);
+        var tail = keep - head;
+        return v.slice(0, head) + '…' + v.slice(v.length - tail);
     }
 
     // Rename this entry's HTML file so its search name (the stem the
@@ -1825,6 +1853,16 @@
         { name: 'set',     aliases: [],       desc: 'open settings',
           argCompleter: null,
           handler: function () { openSettings(); } },
+        { name: 'path',    aliases: [],
+          desc: function () {
+              var ref = currentSourceRef();
+              return ref ? truncateMiddle(ref, 60) : 'copy source path / URL';
+          },
+          argCompleter: null,
+          handler: function () {
+              var ref = currentSourceRef();
+              if (ref) writeClip(ref);
+          } },
         { name: 'rename',  aliases: ['rn'],
           desc: function () {
               var current = currentEntryName();

@@ -40,6 +40,7 @@ For the rationale on the overall keyboard strategy, see
 | `:clear <a-z>`               | Delete a saved mark                                                              |
 | `:open <doc>` / `:o`         | Switch to another cached doc; completes against `/library` (visits-sorted)       |
 | `:rename <name>` / `:rn`     | Rename this PDF (changes the search name used by `:open` / ⌘K). Tab fills current |
+| `:path`                      | Copy this PDF's source path / URL (from `mappings.tsv`) to clipboard             |
 | `:pin`                       | Toggle pin-to-center                                                             |
 | `:scrolloff 25` / `:so 25`   | Set scrolloff band to 25 % (0–50)                                                |
 | `:buffer 20` / `:buf 20`     | Set render buffer to ±20 pages                                                   |
