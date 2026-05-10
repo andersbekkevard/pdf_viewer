@@ -1,3 +1,7 @@
+Important:
+Fix. now cmd f doesnt work for large secitions, only small ones
+
+
 - [x] Make :open be a bit more picky on what files to show, using a zoxide based algo from the "open" db
 - [ ] Maybe UI for eviction in :open
 - [x] Fix overview navigation / selection polish: clicking an outline entry should immediately move the highlighted active chapter in the outline, and in the overview/pages surface `j` / `k` should move between entries with `Enter` selecting the focused one.

@@ -11,6 +11,7 @@
     document.addEventListener('DOMContentLoaded', init);
 
     function init() {
+        rewriteSpacerWidthsToPadding();
         killPdf2htmlExRenderLoop();
         mountSidebarToggleButton();
         registerEscapeHandler();
@@ -973,6 +974,69 @@
                 if (mode === 'auto') pc.style.zoom = String(autoFitZoom());
             });
         });
+    }
+
+
+    // ------------------------------------------------------------------------
+    // Make pdf2htmlEX's spacer spans non-atomic for native Cmd-F.
+    //
+    // pdf2htmlEX wraps every inter-word and intra-word spacer in
+    // `<span class="_ _N">` (` ` content for word gaps, empty for kerning).
+    // Its base `._` class is `display: inline-block`, which Chromium's
+    // FindBuffer treats as an *atomic-inline boundary*: a U+FFFC is injected
+    // into the find buffer at every such span, breaking any multi-word query
+    // like "a collection of" even when those words sit on one line. Single
+    // words inside one find run still match (why "collection" works in
+    // isolation), but anything spanning a spacer is invisible to native find.
+    //
+    // Fix, applied atomically before first paint:
+    //
+    //  1. Rewrite every `._<N> { width: Xpx }` rule (≈ 660 of them per book)
+    //     to `._<N> { padding-left: Xpx }`. Padding works on inline boxes;
+    //     width does not.
+    //  2. Inject one override sheet that promotes `._` from `inline-block` to
+    //     `inline` (no atomic boundary) and pins `font-size: 0` so the inner
+    //     space character collapses to zero visual width — Chromium's find
+    //     buffer is layout-text-driven and still sees the space, so multi-
+    //     word queries match while the visual gap stays exactly what
+    //     pdf2htmlEX intended (padding-left == original width).
+    //
+    // Runs synchronously at the top of init() (overlay.js is `defer`, so all
+    // pdf2htmlEX <style> blocks have already parsed). Both steps live in one
+    // synchronous block so the browser only relayouts once; no visual flash
+    // between the rewrite and the override.
+    //
+    // Defense in depth: if this function never runs (overlay.js missing /
+    // broken), pdf2htmlEX's defaults stand — visual layout is correct, and
+    // we only lose multi-word find. The override is *only* injected if the
+    // rewrite actually succeeded, so we never end up with `_ { display:
+    // inline }` against unmodified `width: Xpx` rules (which would collapse
+    // every word-gap visually).
+    // ------------------------------------------------------------------------
+    function rewriteSpacerWidthsToPadding() {
+        var sheets = document.styleSheets;
+        var rewrote = 0;
+        for (var s = 0; s < sheets.length; s++) {
+            var rules;
+            try { rules = sheets[s].cssRules; } catch (e) { continue; }
+            if (!rules) continue;
+            for (var i = 0; i < rules.length; i++) {
+                var r = rules[i];
+                if (!(r instanceof CSSStyleRule)) continue;
+                var sel = r.selectorText;
+                if (!sel || !/^\._[0-9a-z]+$/.test(sel)) continue;
+                var w = r.style.width;
+                if (!w) continue;
+                r.style.removeProperty('width');
+                r.style.setProperty('padding-left', w);
+                rewrote++;
+            }
+        }
+        if (!rewrote) return;
+        var override = document.createElement('style');
+        override.id = 'pdf2html-find-boundary-fix';
+        override.textContent = '._{display:inline !important;font-size:0 !important;}';
+        document.head.appendChild(override);
     }
 
 
@@ -4169,31 +4233,77 @@
         var pages = visiblePageFrames();
         var inactive = new Highlight();
 
+        // Per-line flat-text search. pdf2htmlEX splits words across kerning
+        // spans (`sho<span class="_ _7"></span>ws`) and wraps every inter-word
+        // space in a spacer span — so a line's text is spread across many
+        // sibling text nodes. A naive per-text-node `indexOf` would miss any
+        // query that crosses a span (multi-word, or even one word like
+        // "shows" cut by a kerning gap). We flatten each `.t` into one string
+        // with an offset map back to (textNode, localOffset), search the flat
+        // string, and rebuild Ranges that may span several text nodes per hit.
+        // Scope is still per `.t` (visual line) — Cmd-F's built-in find has
+        // the same line-scoped contract, and crossing line breaks would match
+        // nothing the user can see.
         pages.forEach(function (pf) {
             var pc = pf.querySelector('.pc');
             if (!pc) return;
-            var walker = document.createTreeWalker(pc, NodeFilter.SHOW_TEXT);
-            var node;
-            while ((node = walker.nextNode())) {
-                var text = node.nodeValue;
-                if (!text) continue;
-                var hay = cs ? text : text.toLowerCase();
-                var cursor = 0, idx;
-                while ((idx = hay.indexOf(needle, cursor)) !== -1) {
-                    var r = document.createRange();
-                    try {
-                        r.setStart(node, idx);
-                        r.setEnd(node, idx + needle.length);
-                        searchState.hits.push(r);
-                        inactive.add(r);
-                    } catch (e) { /* degenerate range, skip */ }
-                    cursor = idx + needle.length;
-                }
+            var lines = pc.querySelectorAll('.t');
+            for (var li = 0; li < lines.length; li++) {
+                collectHitsInLine(lines[li], needle, cs, inactive);
             }
         });
 
         if (searchState.hits.length) {
             CSS.highlights.set('pdf2html-search-hit', inactive);
+        }
+    }
+
+    // Flatten one `.t` into a single string + (node, start, end) map and
+    // push a Range for each occurrence of `needle`. Splits the matched
+    // [start, end) across the contributing text nodes — the resulting Range
+    // is multi-node when a hit crosses a kerning/spacer span, single-node
+    // when it doesn't.
+    function collectHitsInLine(line, needle, cs, highlight) {
+        var walker = document.createTreeWalker(line, NodeFilter.SHOW_TEXT);
+        var flat = '';
+        var map = [];
+        var node;
+        while ((node = walker.nextNode())) {
+            var t = node.nodeValue || '';
+            if (!t.length) continue;
+            map.push({ node: node, start: flat.length, end: flat.length + t.length });
+            flat += t;
+        }
+        if (!flat) return;
+        var hay = cs ? flat : flat.toLowerCase();
+        var cursor = 0, idx;
+        while ((idx = hay.indexOf(needle, cursor)) !== -1) {
+            var r = rangeFromFlatOffsets(map, idx, idx + needle.length);
+            if (r) {
+                searchState.hits.push(r);
+                highlight.add(r);
+            }
+            cursor = idx + needle.length;
+        }
+    }
+
+    // Translate [flatStart, flatEnd) back into a DOM Range over the original
+    // text nodes. Linear over `map`; fine for one line.
+    function rangeFromFlatOffsets(map, flatStart, flatEnd) {
+        var startEntry = null, endEntry = null;
+        for (var i = 0; i < map.length; i++) {
+            var m = map[i];
+            if (!startEntry && flatStart >= m.start && flatStart < m.end) startEntry = m;
+            if (flatEnd > m.start && flatEnd <= m.end) { endEntry = m; break; }
+        }
+        if (!startEntry || !endEntry) return null;
+        var r = document.createRange();
+        try {
+            r.setStart(startEntry.node, flatStart - startEntry.start);
+            r.setEnd(endEntry.node, flatEnd - endEntry.start);
+            return r;
+        } catch (e) {
+            return null;
         }
     }
 
