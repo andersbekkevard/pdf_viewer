@@ -194,6 +194,14 @@ body.pdf2html-search-entered ::-moz-selection { background: transparent; color: 
    `.pc`. */
 .pf > .pc { display: block !important; }
 
+/* pdf2htmlEX paints each page as a full-page raster image behind the
+   selectable `.t` text layer. Keep that raster inert so a missed text
+   selection drag does not turn into Chrome's image-drag ghost. */
+#page-container .pc > img.bi {
+    -webkit-user-drag: none;
+    user-select: none;
+}
+
 
 /* ---- Sidebar visibility + space-taking mode ----
    Hidden by default; body.sidebar-shown reveals it. BOTH rules needed —

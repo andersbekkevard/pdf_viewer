@@ -42,7 +42,7 @@ from pydantic import BaseModel
 import visits
 
 CACHE_DIR = pathlib.Path.home() / ".cache" / "pdf_viewer"
-REPO_DIR = pathlib.Path("/Users/andersbekkevard/dev/misc/pdf_viewer")
+REPO_DIR = pathlib.Path(__file__).resolve().parents[1]
 ASSETS_DIR = REPO_DIR / "assets"
 
 app = FastAPI(title="pdf_viewer", version="0.1.0")

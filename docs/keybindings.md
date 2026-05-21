@@ -12,7 +12,6 @@ For the rationale on the overall keyboard strategy, see
 | Key                    | Action                                                        |
 |------------------------|---------------------------------------------------------------|
 | `⌘.` · `⌘B`            | Toggle sidebar                                                |
-| `Tab`                  | When sidebar is open, toggle `j`/`k` scroll focus between the sidebar and the main PDF |
 | `Ctrl-j` / `Ctrl-k` · `↓` / `↑` | When the sidebar Outline or Pages tab is open, move the temporary selector; `Enter` jumps to it |
 | `Ctrl-f`               | Finger visible URL / DOI / ISBN / long-ID tokens              |
 | `/` · `s`              | Find in visible pages (Enter jump, `n` / `N` cycle)           |
@@ -26,6 +25,11 @@ For the rationale on the overall keyboard strategy, see
 | `⌘,`                   | Open settings (intercepts browser preferences shortcut)       |
 | `?`                    | Toggle cheatsheet (needs Vimium `?` disabled for `localhost:7435`) |
 | `Esc`                  | Close palette → close cheatsheet → clear selection            |
+
+Bare `Tab` is not a viewer command. On the PDF document surface it is
+intentionally ignored so browser focus traversal does not jump between pages;
+overlay inputs such as `:` and `⌘K` still use Tab for local completion/scope
+cycling.
 
 ## Command palette
 

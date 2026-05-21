@@ -134,7 +134,8 @@ The rendered raster of the entire page, drawn behind the text spans.
 `.t` elements are overlaid on top, positioned so their visible shapes
 align with the raster's glyph outlines. Essentially: visual fidelity
 comes from the raster; selectable text comes from the overlaid `.t`
-elements.
+elements. The overlay keeps direct `.pc > img.bi` rasters non-draggable so
+missed selection drags on page whitespace do not start Chrome image drags.
 
 ## `.c` — canvas group
 
