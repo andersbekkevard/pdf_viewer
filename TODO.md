@@ -1,3 +1,11 @@
+Legacy intake only. Active work now lives in Beads (`br`) and is exported
+to `.beads/issues.jsonl`. Do not add new tasks here; convert actionable
+items into beads.
+
+Migration note, 2026-05-21: the current actionable notes were parsed into
+the `pdfv-yg1` Beads epic. Keep the raw notes below as historical intake;
+use `br list --status=open` and `br ready` for active work.
+
 Important:
 Fix. now cmd f doesnt work for large secitions, only small ones
 

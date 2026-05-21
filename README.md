@@ -10,7 +10,9 @@ This README is the orientation doc. For deeper references:
 [`docs/cache.md`](docs/cache.md) (cache design),
 [`docs/keybindings.md`](docs/keybindings.md) (full key + palette
 registry), [`docs/adr/`](docs/adr/) (architectural decisions),
-[`CLAUDE.md`](CLAUDE.md) (build / debug / gotchas).
+[`docs/ai-production.md`](docs/ai-production.md) (agent workflow +
+Beads), [`docs/verification.md`](docs/verification.md) (verification
+loops), [`CLAUDE.md`](CLAUDE.md) (build / debug / gotchas).
 
 ## Why
 
@@ -128,10 +130,12 @@ pdf_viewer/
 ├── launchd/                     # LaunchAgent plist
 ├── docs/
 │   ├── adr/                     # immutable architectural decisions
+│   ├── ai-production.md         # agent workflow + Beads task protocol
 │   ├── cache.md                 # cache design: layout, hash keys, URL norm
 │   ├── keybindings.md           # full key + palette registry
 │   ├── non-goals.md             # explicit scope boundaries
-│   └── pdf2htmlex-dom.md        # DOM conventions of converted HTML
+│   ├── pdf2htmlex-dom.md        # DOM conventions of converted HTML
+│   └── verification.md          # browser/daemon/manual verification loops
 └── CLAUDE.md                    # guidance for future Claude sessions
 ```
 
@@ -279,6 +283,12 @@ bust the `<script src=…?v=N>` query-string cache.
   orientation doc Claude sessions are handed)
 - [`docs/cache.md`](docs/cache.md) — cache layout, hash keys, URL
   normalization, failure modes
+- [`docs/ai-production.md`](docs/ai-production.md) — documentation
+  ownership and Beads workflow for agent-driven work
+- [`docs/verification.md`](docs/verification.md) — browser, daemon, and
+  manual verification loops for closing beads
+- [`docs/pins.md`](docs/pins.md) — pins / markers product intent and
+  open interaction questions
 - [`docs/keybindings.md`](docs/keybindings.md) — full key + palette
   registry including Vimium conflicts
 - [`docs/non-goals.md`](docs/non-goals.md) — explicit scope boundaries
