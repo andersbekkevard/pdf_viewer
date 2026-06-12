@@ -72,12 +72,14 @@ NATIVE_DATA_DIR="$HOME/.local/opt/pdf2htmlEX/share/pdf2htmlEX"
 # Baked poppler-data default is a version-pinned Cellar path that breaks on
 # brew upgrade; pass the stable symlink explicitly (needed for CJK/CID PDFs).
 NATIVE_POPPLER_DATA="/opt/homebrew/share/poppler"
-OVERLAY_VERSION=25
 INJECTOR="$REPO_DIR/scripts/inject-overlay.py"
 EXTERNALIZER="$REPO_DIR/scripts/externalize-page-images.py"
 LIGHT_VARIANTS_ENABLED="${PDF_VIEWER_ENABLE_EXPERIMENTAL_LIGHT:-0}"
 
-export REPO_DIR CACHE_DIR LOG_FILE MAP_FILE MAP_LOCK ASSET_LINK NATIVE_BIN NATIVE_DATA_DIR NATIVE_POPPLER_DATA OVERLAY_VERSION INJECTOR EXTERNALIZER LIGHT_VARIANTS_ENABLED
+# Overlay asset version is a content hash derived by the injector; OVERLAY_HASH
+# is captured once below (after the asset symlink exists) and exported only for
+# the provenance writer. The injector itself derives the same hash per call.
+export REPO_DIR CACHE_DIR LOG_FILE MAP_FILE MAP_LOCK ASSET_LINK NATIVE_BIN NATIVE_DATA_DIR NATIVE_POPPLER_DATA INJECTOR EXTERNALIZER LIGHT_VARIANTS_ENABLED
 
 mkdir -p "$CACHE_DIR"
 
@@ -91,6 +93,9 @@ if [[ ! -L "$ASSET_LINK" ]]; then
     rm -rf "$ASSET_LINK" 2>/dev/null
     ln -s "$ASSET_SRC" "$ASSET_LINK" || die "could not link assets dir"
 fi
+
+OVERLAY_HASH="$(uv run "$INJECTOR" --print-version)"
+export OVERLAY_HASH
 
 FD=$(command -v fd || command -v fdfind || true)
 [[ -n "$FD" ]] || die "fd not found — install via 'brew install fd'"
@@ -131,7 +136,7 @@ worker() {
                     --poppler-data-dir "$NATIVE_POPPLER_DATA" --dest-dir "$out_dir" \
                     "$pdf" >>"$LOG_FILE" 2>&1; then
                 if uv run "$INJECTOR" "$out_dir/$out_name" "${pdf_name%.*}" \
-                        "$OVERLAY_VERSION" >>"$LOG_FILE" 2>&1; then
+                        >>"$LOG_FILE" 2>&1; then
                     if [[ "$LIGHT_VARIANTS_ENABLED" == "1" ]]; then
                         local light_out_name="${out_name%.html}.light.html"
                         if uv run "$EXTERNALIZER" \
@@ -141,7 +146,7 @@ worker() {
                                 --eager 2 \
                                 --clean >>"$LOG_FILE" 2>&1; then
                             uv run "$INJECTOR" "$out_dir/$light_out_name" "${pdf_name%.*}" \
-                                "$OVERLAY_VERSION" >>"$LOG_FILE" 2>&1 \
+                                >>"$LOG_FILE" 2>&1 \
                                 || log "[fail-light-inject] $pdf"
                         else
                             log "[fail-light] $pdf"
@@ -186,7 +191,7 @@ worker() {
     if [[ "$did_convert" == "1" ]]; then
         python3 "$REPO_DIR/scripts/write-provenance.py" "$out_dir/meta.json" \
             --converter native-arm64 --bin "$NATIVE_BIN" \
-            --overlay-version "$OVERLAY_VERSION" \
+            --overlay-version "$OVERLAY_HASH" \
             >>"$LOG_FILE" 2>&1 || log "[fail-provenance] $pdf"
     fi
 

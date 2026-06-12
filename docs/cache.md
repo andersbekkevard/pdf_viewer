@@ -120,7 +120,7 @@ first and neither clobbers the other:
     "pdf2htmlex": "0.18.8.rc2",
     "poppler": "24.06.1",          // 0.89.0 for the Docker era
     "converted_at": "2026-06-12",  // ISO date; live conversions only
-    "overlay_version": 25,         // OVERLAY_VERSION at injection time
+    "overlay_version": "8efe6927a5", // overlay content hash at injection time
     "backfilled": true             // present only on backfilled entries
   }
 }

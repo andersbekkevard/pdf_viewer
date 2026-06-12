@@ -33,7 +33,6 @@ NATIVE_DATA_DIR="$HOME/.local/opt/pdf2htmlEX/share/pdf2htmlEX"
 # Baked poppler-data default is a version-pinned Cellar path that breaks on
 # brew upgrade; pass the stable symlink explicitly (needed for CJK/CID PDFs).
 NATIVE_POPPLER_DATA="/opt/homebrew/share/poppler"
-OVERLAY_VERSION=25  # bump to bust browser cache of /_assets/overlay.*
 INJECTOR="$REPO_DIR/scripts/inject-overlay.py"
 EXTERNALIZER="$REPO_DIR/scripts/externalize-page-images.py"
 LIGHT_VARIANTS_ENABLED="${PDF_VIEWER_ENABLE_EXPERIMENTAL_LIGHT:-0}"
@@ -199,7 +198,7 @@ fi
 # Inject title, favicon, and overlay <link>/<script> tags (idempotent).
 # Same code also runs from upgrade-cache.sh --mode=inject.
 uv run "$INJECTOR" \
-    "$OUT_DIR/$OUT_NAME" "${PDF_NAME%.*}" "$OVERLAY_VERSION" \
+    "$OUT_DIR/$OUT_NAME" "${PDF_NAME%.*}" \
     || fail "overlay injection failed"
 
 # Note: native browser Cmd-F now indexes the full document via
@@ -227,7 +226,7 @@ elif [[ "$LIGHT_VARIANTS_ENABLED" != "1" ]]; then
 fi
 if [[ "$LIGHT_VARIANTS_ENABLED" == "1" && -f "$OUT_DIR/$LIGHT_OUT_NAME" ]]; then
     uv run "$INJECTOR" \
-        "$OUT_DIR/$LIGHT_OUT_NAME" "${PDF_NAME%.*}" "$OVERLAY_VERSION" \
+        "$OUT_DIR/$LIGHT_OUT_NAME" "${PDF_NAME%.*}" \
         || log "light variant overlay injection failed for $LIGHT_OUT_NAME"
 fi
 
@@ -296,9 +295,10 @@ notify "Opened $PDF_NAME"
 # correctness; doing it first just sidesteps a concurrent read-modify-write.
 # Only on a real conversion — a cache hit keeps its original provenance.
 if [[ "$DID_CONVERT" == "1" ]]; then
+    OVERLAY_HASH="$(uv run "$INJECTOR" --print-version)"
     python3 "$REPO_DIR/scripts/write-provenance.py" "$OUT_DIR/meta.json" \
         --converter native-arm64 --bin "$NATIVE_BIN" \
-        --overlay-version "$OVERLAY_VERSION" \
+        --overlay-version "$OVERLAY_HASH" \
         || log "provenance write failed for $PDF_NAME"
 fi
 

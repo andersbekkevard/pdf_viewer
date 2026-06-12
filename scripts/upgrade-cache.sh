@@ -9,7 +9,8 @@
 #   --mode=inject
 #       Re-run the title/favicon/overlay-tag injector (inject-overlay.py) on
 #       every cached <hash>/<stem>.html. Strips prior id="pdf2html-*" tags
-#       (idempotent) and writes fresh ones at the current OVERLAY_VERSION.
+#       (idempotent) and writes fresh ones at the current overlay content hash
+#       (?v=<hash>, derived by the injector from assets/overlay.{js,css}).
 #       Cheap — no Docker, seconds for the whole cache.
 #
 #   --mode=reconvert
@@ -55,7 +56,6 @@ NATIVE_DATA_DIR="$HOME/.local/opt/pdf2htmlEX/share/pdf2htmlEX"
 # Baked poppler-data default is a version-pinned Cellar path that breaks on
 # brew upgrade; pass the stable symlink explicitly (needed for CJK/CID PDFs).
 NATIVE_POPPLER_DATA="/opt/homebrew/share/poppler"
-OVERLAY_VERSION=25
 INJECTOR="$REPO_DIR/scripts/inject-overlay.py"
 EXTERNALIZER="$REPO_DIR/scripts/externalize-page-images.py"
 LIGHT_VARIANTS_ENABLED="${PDF_VIEWER_ENABLE_EXPERIMENTAL_LIGHT:-0}"
@@ -116,7 +116,7 @@ if [[ "$MODE" == "inject" ]]; then
 
         stem=$(basename "$html" .html)
         stem="${stem%.light}"
-        if uv run "$INJECTOR" "$html" "$stem" "$OVERLAY_VERSION" \
+        if uv run "$INJECTOR" "$html" "$stem" \
                 >>"$LOG_FILE" 2>&1; then
             updated=$((updated + 1))
         else
@@ -192,7 +192,7 @@ if [[ "$MODE" == "reconvert" ]]; then
                 "$pdf_dir/$pdf_name" >>"$LOG_FILE" 2>&1; then
 
             if uv run "$INJECTOR" "$out_dir/$out_name" "${pdf_name%.*}" \
-                    "$OVERLAY_VERSION" >>"$LOG_FILE" 2>&1; then
+                    >>"$LOG_FILE" 2>&1; then
                 if [[ "$LIGHT_VARIANTS_ENABLED" == "1" ]]; then
                     light_out_name="${out_name%.html}.light.html"
                     if uv run "$EXTERNALIZER" \
@@ -202,7 +202,7 @@ if [[ "$MODE" == "reconvert" ]]; then
                             --eager 2 \
                             --clean >>"$LOG_FILE" 2>&1; then
                         uv run "$INJECTOR" "$out_dir/$light_out_name" "${pdf_name%.*}" \
-                            "$OVERLAY_VERSION" >>"$LOG_FILE" 2>&1 \
+                            >>"$LOG_FILE" 2>&1 \
                             || log "reconvert [$idx/$total] light inject FAILED: $out_dir/$light_out_name"
                     else
                         log "reconvert [$idx/$total] light FAILED: $source_ref"
@@ -216,9 +216,10 @@ if [[ "$MODE" == "reconvert" ]]; then
                 # --mode=meta (or the next live convert) will merge pdfinfo
                 # fields in alongside it. Versions parsed from the binary so
                 # this stays accurate across toolchain upgrades.
+                OVERLAY_HASH="$(uv run "$INJECTOR" --print-version)"
                 python3 "$REPO_DIR/scripts/write-provenance.py" "$out_dir/meta.json" \
                     --converter native-arm64 --bin "$NATIVE_BIN" \
-                    --overlay-version "$OVERLAY_VERSION" \
+                    --overlay-version "$OVERLAY_HASH" \
                     >>"$LOG_FILE" 2>&1 \
                     || log "reconvert [$idx/$total] provenance write FAILED: $out_dir"
                 ok=$((ok + 1))
@@ -283,7 +284,7 @@ if [[ "$MODE" == "light" ]]; then
                 --url-prefix "/$hash/page-images/" \
                 --eager 2 \
                 --clean >>"$LOG_FILE" 2>&1; then
-            if uv run "$INJECTOR" "$light_html" "$stem" "$OVERLAY_VERSION" \
+            if uv run "$INJECTOR" "$light_html" "$stem" \
                     >>"$LOG_FILE" 2>&1; then
                 ok=$((ok + 1))
             else

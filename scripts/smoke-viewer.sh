@@ -28,7 +28,6 @@ ASSERT_SCRIPT="$REPO_DIR/scripts/smoke-viewer.cjs"
 NATIVE_BIN="$HOME/.local/opt/pdf2htmlEX/bin/pdf2htmlEX"
 NATIVE_DATA_DIR="$HOME/.local/opt/pdf2htmlEX/share/pdf2htmlEX"
 NATIVE_POPPLER_DATA="/opt/homebrew/share/poppler"
-OVERLAY_VERSION="smoke"
 
 # Temp cache entry. The dir name must be hex so inject-overlay.py derives the
 # hash meta tag and the daemon's /<hash>/<file> route accepts it. A hex pid
@@ -68,7 +67,7 @@ OUT_HTML="$OUT_DIR/basic_text.html"
 [[ -f "$OUT_HTML" ]] || err "conversion produced no HTML at $OUT_HTML"
 
 # --- 2. inject overlay (same signature as pdf2html-convert.sh) --------------
-uv run "$INJECTOR" "$OUT_HTML" "basic_text" "$OVERLAY_VERSION" \
+uv run "$INJECTOR" "$OUT_HTML" "basic_text" \
     || err "overlay injection failed"
 
 # A real cached entry always has a sibling meta.json (extract-pdf-meta.sh runs

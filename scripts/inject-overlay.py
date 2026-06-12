@@ -2,7 +2,18 @@
 """Inject title, favicon, and overlay <link>/<script> tags into a pdf2htmlEX
 output HTML in place.
 
-Usage: inject-overlay.py <html_path> <title_stem> <overlay_version>
+Usage: inject-overlay.py <html_path> <title_stem>
+       inject-overlay.py --print-version
+
+The asset version (?v=…) is derived automatically from a content hash of
+assets/overlay.js + assets/overlay.css (first 10 hex chars of sha256 over the
+two files' concatenated bytes), resolved relative to this script's repo
+location. No manual version constant — editing either asset changes the hash,
+so the ?v= self-busts; re-running with unchanged assets is a byte-identical
+no-op.
+
+A legacy third positional argument (the old explicit version) is accepted and
+ignored for back-compat with any in-flight caller, but it has no effect.
 
 Idempotent: strips any prior id="pdf2html-overlay-*" / id="pdf2html-favicon"
 tags (and old inline <style>/<script> pairs from the legacy hardcoded script)
@@ -11,8 +22,22 @@ point of upgrade-cache.sh --mode=inject.
 """
 import sys
 import re
+import hashlib
 import pathlib
 import html as _html
+
+REPO_DIR = pathlib.Path(__file__).resolve().parents[1]
+ASSETS_DIR = REPO_DIR / "assets"
+_ASSET_FILES = ("overlay.js", "overlay.css")
+
+
+def asset_version() -> str:
+    """First 10 hex chars of sha256 over the concatenated bytes of
+    overlay.js + overlay.css. Stable across runs when assets are unchanged."""
+    h = hashlib.sha256()
+    for name in _ASSET_FILES:
+        h.update((ASSETS_DIR / name).read_bytes())
+    return h.hexdigest()[:10]
 
 
 def inject(html: str, stem: str, version: str, entry_hash: str = "") -> str:
@@ -64,12 +89,18 @@ def inject(html: str, stem: str, version: str, entry_hash: str = "") -> str:
 
 
 def main() -> int:
-    if len(sys.argv) != 4:
-        print("usage: inject-overlay.py <html_path> <title_stem> <version>",
+    if len(sys.argv) == 2 and sys.argv[1] == "--print-version":
+        print(asset_version())
+        return 0
+    # Accept <html> <stem> [legacy_version]; the legacy version is ignored.
+    if len(sys.argv) not in (3, 4):
+        print("usage: inject-overlay.py <html_path> <title_stem>\n"
+              "       inject-overlay.py --print-version",
               file=sys.stderr)
         return 2
     path = pathlib.Path(sys.argv[1])
-    stem, version = sys.argv[2], sys.argv[3]
+    stem = sys.argv[2]
+    version = asset_version()
     # Cache layout is <cache_root>/<hash>/<stem>.html; the parent dir name
     # is the content hash. Fall back to "" if the path doesn't match — the
     # injector still works, just without the hash meta tag.

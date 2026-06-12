@@ -61,9 +61,16 @@ Those entrypoints are deliberately trivial `nohup` forks into
 ### Script / injection changes
 - Trash the relevant cache entry to force re-conversion:
   `trash ~/.cache/pdf_viewer/<hash>/`.
-- Or bump `OVERLAY_VERSION` in `scripts/pdf2html-convert.sh` to bust
-  the `<script src=…?v=N>` query-string cache.
-- Bulk re-inject the overlay over all cached HTML (no Docker, seconds):
+- The `?v=<hash>` cache-buster is derived automatically by
+  `scripts/inject-overlay.py` from a content hash of
+  `assets/overlay.{js,css}` — editing either asset self-busts the query
+  string, no manual version bump. (`uv run scripts/inject-overlay.py
+  --print-version` prints the current hash.)
+- Even stale `?v=` in already-cached HTML self-corrects: the daemon
+  serves `/_assets/*` with an ETag and `max-age=60, must-revalidate`,
+  so the browser revalidates and 304s onto fresh bytes within a minute.
+- Bulk re-inject the overlay over all cached HTML to rewrite old `?v=`
+  to the current hash (no Docker, seconds):
   `scripts/upgrade-cache.sh --mode=inject`.
 
 ### Running / restarting the daemon

@@ -55,7 +55,6 @@ NATIVE_DATA_DIR="$HOME/.local/opt/pdf2htmlEX/share/pdf2htmlEX"
 # Baked poppler-data default is a version-pinned Cellar path that breaks on
 # brew upgrade; pass the stable symlink explicitly (needed for CJK/CID PDFs).
 NATIVE_POPPLER_DATA="/opt/homebrew/share/poppler"
-OVERLAY_VERSION=25
 INJECTOR="$REPO_DIR/scripts/inject-overlay.py"
 EXTERNALIZER="$REPO_DIR/scripts/externalize-page-images.py"
 LIGHT_VARIANTS_ENABLED="${PDF_VIEWER_ENABLE_EXPERIMENTAL_LIGHT:-0}"
@@ -71,6 +70,10 @@ if [[ ! -L "$ASSET_LINK" ]]; then
     rm -rf "$ASSET_LINK" 2>/dev/null
     ln -s "$ASSET_SRC" "$ASSET_LINK" || die "could not link assets dir"
 fi
+
+# Overlay asset version is a content hash derived by the injector. Capture it
+# once for the provenance writer (the injector itself derives it per call).
+OVERLAY_HASH="$(uv run "$INJECTOR" --print-version)"
 
 FD=$(command -v fd || command -v fdfind || true)
 [[ -n "$FD" ]] || die "fd not found — install via 'brew install fd'"
@@ -128,7 +131,7 @@ for idx in "${!PDFS[@]}"; do
             continue
         fi
         if ! uv run "$INJECTOR" "$out_dir/$out_name" "${pdf_name%.*}" \
-                "$OVERLAY_VERSION" >>"$LOG_FILE" 2>&1; then
+                >>"$LOG_FILE" 2>&1; then
             log "[${n}/${total}] inject FAILED: $pdf"
             failed=$((failed + 1))
             continue
@@ -142,7 +145,7 @@ for idx in "${!PDFS[@]}"; do
                     --eager 2 \
                     --clean >>"$LOG_FILE" 2>&1; then
                 uv run "$INJECTOR" "$out_dir/$light_out_name" "${pdf_name%.*}" \
-                    "$OVERLAY_VERSION" >>"$LOG_FILE" 2>&1 \
+                    >>"$LOG_FILE" 2>&1 \
                     || log "[${n}/${total}] light inject failed: $pdf"
             else
                 log "[${n}/${total}] light variant failed: $pdf"
@@ -161,7 +164,7 @@ for idx in "${!PDFS[@]}"; do
     if [[ "$did_convert" == "1" ]]; then
         python3 "$REPO_DIR/scripts/write-provenance.py" "$out_dir/meta.json" \
             --converter native-arm64 --bin "$NATIVE_BIN" \
-            --overlay-version "$OVERLAY_VERSION" \
+            --overlay-version "$OVERLAY_HASH" \
             >>"$LOG_FILE" 2>&1 \
             || log "[${n}/${total}] provenance write failed for $pdf"
     fi

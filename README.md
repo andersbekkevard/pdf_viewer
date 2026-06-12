@@ -307,8 +307,12 @@ read-only PASS/FAIL diagnosis of the whole chain (daemon, symlink, toolchain).
 ⌘⇧R in an already-open converted tab. Symlink-served, no reconversion.
 
 **Script / injection changes**: `trash ~/.cache/pdf_viewer/<hash>/` to
-force re-conversion next run, or bump `OVERLAY_VERSION` in the script to
-bust the `<script src=…?v=N>` query-string cache.
+force re-conversion next run. The `<script src=…?v=<hash>>` query-string
+cache-buster is derived automatically by `scripts/inject-overlay.py`
+from a content hash of `assets/overlay.{js,css}`, so editing either
+asset self-busts it — no manual version bump. Already-cached HTML with a
+stale `?v=` also self-corrects, since the daemon serves `/_assets/*`
+with an ETag and a short `max-age` that forces revalidation.
 
 ## Further reading
 

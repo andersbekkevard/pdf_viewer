@@ -1059,7 +1059,18 @@ def stats_recent(limit: int = Query(100, ge=1, le=1000)):
 # -----------------------------------------------------------------------------
 
 # Overlay assets — repo-backed so edits to overlay.{css,js} go live on refresh.
-app.mount("/_assets", StaticFiles(directory=ASSETS_DIR), name="assets")
+# StaticFiles already emits ETag + Last-Modified and honors If-None-Match /
+# If-Modified-Since (304). We add a short must-revalidate Cache-Control so the
+# browser revalidates promptly instead of using its opaque heuristic freshness
+# window — this is what lets stale ?v= HTML self-correct without a hard reload.
+class _RevalidatingStatic(StaticFiles):
+    async def get_response(self, path, scope):
+        resp = await super().get_response(path, scope)
+        resp.headers.setdefault("Cache-Control", "max-age=60, must-revalidate")
+        return resp
+
+
+app.mount("/_assets", _RevalidatingStatic(directory=ASSETS_DIR), name="assets")
 
 # The whole cache. Any /<hash>/<file> request (the URL pdf2html-convert.sh
 # navigates Comet to) falls through to this mount. `html=False` prevents
