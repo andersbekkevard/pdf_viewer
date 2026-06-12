@@ -4027,44 +4027,103 @@
     // Resume position — jump back to the last-visited page on reopen.
     //
     // Key: `pdf2html-position:<hash>` → JSON {page, ts}. Written on every
-    // pdf2html-page-change (debounced 400ms); read once at init. Skipped if
-    // the URL already carries a `#pfXX` anchor (outline/bookmark deep-link
-    // wins). Saved page 1 is treated as "nothing to resume."
+    // pdf2html-page-change (debounced 400ms); read once at init.
+    //
+    // The URL hash and the saved position must not fight each other:
+    //   - A `#pfXX` deep link (outline/bookmark) wins on load, but native
+    //     anchoring is unreliable here — pdf2htmlEX pages + content-visibility
+    //     land at the top before late layout, so we actively scroll to the
+    //     target ourselves with the same RAF retry loop as the restore path.
+    //   - Once the reader scrolls away from that target the writer strips the
+    //     now-stale `#pfXX`, so the next reload takes the saved-position path
+    //     instead of re-anchoring to a page they already left.
+    //   - An unknown hash (`#foo`) is treated as no hash: we strip it (else the
+    //     browser's own anchor scroll fights our restore) and resume normally.
+    // Saved page 1 is treated as "nothing to resume."
     // ------------------------------------------------------------------------
     function mountResumePosition() {
         var hash = entryHash();
         if (!hash) return;
         var key = 'pdf2html-position:' + hash;
 
-        if (!location.hash) {
+        // Parse `#pfXX` → page number; same regex shape as elsewhere
+        // (outline links, getChapters). Null for an empty or unknown hash.
+        function pageFromLocationHash() {
+            var m = (location.hash || '').match(/#pf([0-9a-f]+)/i);
+            return m ? parseInt(m[1], 16) : null;
+        }
+
+        function stripHash() {
+            try {
+                history.replaceState(null, '', location.pathname + location.search);
+            } catch (_) {}
+        }
+
+        // Shared RAF retry loop: wait for the page element to lay out, then
+        // scroll it to the top. Used by both the deep-link and restore paths.
+        function scrollToPage(target) {
+            var tries = 0;
+            var go = function () {
+                var pel = document.getElementById('pf' + target.toString(16));
+                if (pel && pel.offsetHeight > 0) {
+                    pel.scrollIntoView({ block: 'start' });
+                    document.dispatchEvent(new CustomEvent('pdf2html-page-counter-refresh'));
+                    return;
+                }
+                if (tries++ < 60) requestAnimationFrame(go);
+            };
+            requestAnimationFrame(go);
+        }
+
+        var hashPage = pageFromLocationHash();
+        if (hashPage && hashPage > 0) {
+            // Honor the deep link: native anchoring doesn't hold, so drive it.
+            // The subsequent debounced write records the correct page.
+            scrollToPage(hashPage);
+        } else {
+            // No hash, or an unknown hash we ignore: restore saved position.
+            // An unknown hash (`#foo`) still makes the browser run its own
+            // anchor scroll after load, which overrides our restore; strip it
+            // first so the only scroll is ours.
+            if (location.hash) stripHash();
             var saved = null;
             try { saved = JSON.parse(localStorage.getItem(key) || 'null'); } catch (_) {}
-            if (saved && saved.page > 1) {
-                var target = saved.page;
-                var tries = 0;
-                var restore = function () {
-                    var pel = document.getElementById('pf' + target.toString(16));
-                    if (pel && pel.offsetHeight > 0) {
-                        pel.scrollIntoView({ block: 'start' });
-                        document.dispatchEvent(new CustomEvent('pdf2html-page-counter-refresh'));
-                        return;
-                    }
-                    if (tries++ < 60) requestAnimationFrame(restore);
-                };
-                requestAnimationFrame(restore);
-            }
+            if (saved && saved.page > 1) scrollToPage(saved.page);
         }
 
         var writeTimer = null;
+        var lastWritten = null;   // last page persisted to localStorage
+        var pendingPage = null;   // page from the latest change, write pending
+
+        function flush() {
+            if (writeTimer) { clearTimeout(writeTimer); writeTimer = null; }
+            if (pendingPage == null) return;
+            var p = pendingPage;
+            pendingPage = null;
+            try {
+                localStorage.setItem(key, JSON.stringify({ page: p, ts: Date.now() }));
+            } catch (_) {}
+            lastWritten = p;
+            // Keep the URL hash honest: once the reader has scrolled off the
+            // outline target, a stale `#pfXX` would otherwise re-anchor on the
+            // next reload and skip the saved-position restore. Strip it so the
+            // saved position wins.
+            var hp = pageFromLocationHash();
+            if (hp != null && hp !== p) stripHash();
+        }
+
         document.addEventListener('pdf2html-page-change', function (e) {
             var p = e.detail && e.detail.page;
             if (!p || p < 1) return;
+            pendingPage = p;
             if (writeTimer) clearTimeout(writeTimer);
-            writeTimer = setTimeout(function () {
-                try {
-                    localStorage.setItem(key, JSON.stringify({ page: p, ts: Date.now() }));
-                } catch (_) {}
-            }, 400);
+            writeTimer = setTimeout(flush, 400);
+        });
+
+        // A reload/close inside the 400ms debounce window would lose the last
+        // movement; flush synchronously on pagehide to land it.
+        window.addEventListener('pagehide', function () {
+            if (pendingPage != null && pendingPage !== lastWritten) flush();
         });
     }
 
