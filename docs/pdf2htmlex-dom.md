@@ -124,6 +124,12 @@ our purposes, `.t` elements are:
 - What `Selection.focusNode.parentElement` returns (usually; sometimes
   it's a nested `<span>` inside a `.t`)
 
+Light cache variants (`<stem>.light.html`) intentionally remove `.t` runs.
+They replace the glyph-heavy text layer with one transparent
+`.pdf2html-page-text` node per `.pf`, keeping native browser find/copy on
+real DOM text while avoiding millions of span nodes. Treat `.t` as the
+canonical HTML shape, not as guaranteed in every served variant.
+
 ## `.bi` — background image
 
 ```html

@@ -4,6 +4,8 @@ Routes:
     GET    /view?path=<local>   cached HTML or stream the PDF (miss → native viewer)
     GET    /view?url=<remote>   cached HTML or 307 to <remote>  (miss → native viewer)
     GET    /view-raw?<remote>   same as /view?url=, but preserves raw query strings
+    GET    /view-light?...      derived light HTML if present, canonical fallback
+    GET    /view-light-raw?...  same as /view-light?url= for raw signed URLs
     GET    /stats               visit totals + top 20 by count (hash → name enriched)
     GET    /stats/recent        raw visit timeline, most-recent first
     GET    /_assets/*           overlay.{css,js} from the repo assets dir
@@ -27,6 +29,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import html as _html
+import json
 import pathlib
 import re
 import shutil
@@ -44,6 +47,7 @@ import visits
 CACHE_DIR = pathlib.Path.home() / ".cache" / "pdf_viewer"
 REPO_DIR = pathlib.Path(__file__).resolve().parents[1]
 ASSETS_DIR = REPO_DIR / "assets"
+DISABLED_FILE = CACHE_DIR / "disabled.json"
 
 app = FastAPI(title="pdf_viewer", version="0.1.0")
 
@@ -86,11 +90,69 @@ def content_hash(path: pathlib.Path) -> str:
     return digest
 
 
+def _mapped_hash_for_path(path: pathlib.Path) -> Optional[str]:
+    """Resolve a cached local PDF by mappings.tsv without reading the PDF.
+
+    Cloud-backed files (OneDrive/iCloud) can throw EDEADLK when read from a
+    background daemon while the provider is coordinating the file. For cached
+    entries, mappings.tsv is the routing source of truth, so prefer it over
+    content hashing.
+    """
+    try:
+        resolved = path.expanduser().resolve(strict=True)
+    except FileNotFoundError:
+        resolved = path.expanduser()
+    needle = str(resolved)
+    for hash_, mapping in _load_mappings().items():
+        if _strip_passthrough(mapping.get("source_ref", "")) == needle:
+            return hash_
+    return None
+
+
+def entry_hash_for_path(path: pathlib.Path) -> Optional[str]:
+    mapped = _mapped_hash_for_path(path)
+    if mapped:
+        return mapped
+    try:
+        return content_hash(path)
+    except OSError:
+        return None
+
+
+LIGHT_HTML_SUFFIX = ".light.html"
+
+
+def is_light_html(path: pathlib.Path) -> bool:
+    return path.name.endswith(LIGHT_HTML_SUFFIX)
+
+
 def first_html(entry_dir: pathlib.Path) -> Optional[pathlib.Path]:
+    """Return the canonical HTML for an entry.
+
+    Light variants are derived cache state. They must not become canonical just
+    because they sort before/after the original file.
+    """
     if not entry_dir.is_dir():
         return None
     matches = sorted(entry_dir.glob("*.html"))
+    canonical = [p for p in matches if not is_light_html(p)]
+    if canonical:
+        return canonical[0]
     return matches[0] if matches else None
+
+
+def light_html_for(canonical_html: pathlib.Path) -> pathlib.Path:
+    if is_light_html(canonical_html):
+        return canonical_html
+    return canonical_html.with_name(canonical_html.stem + LIGHT_HTML_SUFFIX)
+
+
+def preferred_html(entry_dir: pathlib.Path) -> Optional[pathlib.Path]:
+    canonical = first_html(entry_dir)
+    if canonical is None:
+        return None
+    light = light_html_for(canonical)
+    return light if light.is_file() else canonical
 
 
 # -----------------------------------------------------------------------------
@@ -135,6 +197,7 @@ def cache_urls():
                     "host": parsed.netloc.lower(),
                     "path": parsed.path,
                     "hash": hash_,
+                    "disabled": is_entry_disabled(hash_),
                 })
                 seen.add(hash_)
             elif source_ref.startswith("/"):
@@ -142,6 +205,7 @@ def cache_urls():
                     "kind": "file",
                     "path": source_ref,
                     "hash": hash_,
+                    "disabled": is_entry_disabled(hash_),
                 })
                 seen.add(hash_)
     return entries
@@ -184,20 +248,36 @@ def _purge_expired_nav_signals() -> None:
     ]
 
 
+def _queue_extension_sync_signal(hash_: str, reason: str) -> None:
+    _purge_expired_nav_signals()
+    _pending_nav_signals.append({
+        "type": "sync_rules",
+        "hash": hash_,
+        "reason": reason,
+        "created_at": time.time(),
+    })
+    _nav_event().set()
+
+
 class NavigateSignal(BaseModel):
     from_url: str
     to_url: str
 
 
-@app.post("/signal/navigate")
-async def signal_navigate(sig: NavigateSignal):
+def _queue_navigate_signal(from_url: str, to_url: str) -> None:
     _purge_expired_nav_signals()
     _pending_nav_signals.append({
-        "from_url": sig.from_url,
-        "to_url": sig.to_url,
+        "type": "navigate",
+        "from_url": from_url,
+        "to_url": to_url,
         "created_at": time.time(),
     })
     _nav_event().set()
+
+
+@app.post("/signal/navigate")
+async def signal_navigate(sig: NavigateSignal):
+    _queue_navigate_signal(sig.from_url, sig.to_url)
     return {"queued": True, "pending": len(_pending_nav_signals)}
 
 
@@ -247,6 +327,20 @@ def view(
     return _view_url(url, background)
 
 
+@app.get("/view-light")
+def view_light(
+    background: BackgroundTasks,
+    path: Optional[str] = Query(None, description="absolute local path"),
+    url: Optional[str] = Query(None, description="http(s) URL"),
+):
+    if (path is None) == (url is None):
+        raise HTTPException(400, "provide exactly one of: path, url")
+    if path is not None:
+        return _view_path(path, background, light=True)
+    assert url is not None
+    return _view_url(url, background, light=True)
+
+
 @app.get("/view-raw")
 def view_raw(request: Request, background: BackgroundTasks):
     """Remote URL view route for extension redirects.
@@ -270,7 +364,24 @@ def view_raw(request: Request, background: BackgroundTasks):
     return _view_url(url, background)
 
 
-def _view_path(path: str, background: BackgroundTasks):
+@app.get("/view-light-raw")
+def view_light_raw(request: Request, background: BackgroundTasks):
+    """Light-variant remote URL route for extension redirects."""
+    raw_query = request.scope.get("query_string", b"")
+    if not raw_query:
+        raise HTTPException(400, "missing raw URL query string")
+    try:
+        url = raw_query.decode("ascii")
+    except UnicodeDecodeError:
+        raise HTTPException(400, "raw URL must be ASCII / percent-encoded")
+
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise HTTPException(400, "raw URL must be an absolute http(s) URL")
+    return _view_url(url, background, light=True)
+
+
+def _view_path(path: str, background: BackgroundTasks, light: bool = False):
     try:
         p = pathlib.Path(path).expanduser().resolve(strict=True)
     except FileNotFoundError:
@@ -278,36 +389,64 @@ def _view_path(path: str, background: BackgroundTasks):
     if not p.is_file():
         raise HTTPException(400, f"not a regular file: {path}")
 
-    entry = CACHE_DIR / content_hash(p)
-    html = first_html(entry)
+    hash_ = entry_hash_for_path(p)
+    entry = CACHE_DIR / hash_ if hash_ else None
+    html = (
+        (preferred_html(entry) if light else first_html(entry))
+        if entry is not None else None
+    )
     if html is not None:
-        background.add_task(visits.record, entry.name, "path")
+        assert hash_ is not None
+        if is_entry_disabled(hash_):
+            return FileResponse(
+                p,
+                media_type="application/pdf",
+                filename=p.name,
+                content_disposition_type="inline",
+            )
+        background.add_task(visits.record, hash_, "path")
         return FileResponse(html, media_type="text/html; charset=utf-8")
 
     # Cache miss. Chromium blocks http→file: redirects, so we can't 307 to
     # file://. Stream the bytes as application/pdf — browser opens native
     # viewer. User can then run Raycast convert to escalate into HTML.
-    return FileResponse(p, media_type="application/pdf", filename=p.name)
+    return FileResponse(
+        p,
+        media_type="application/pdf",
+        filename=p.name,
+        content_disposition_type="inline",
+    )
 
 
 PASSTHROUGH_MARKER = "_pdfvw=passthrough"
 
 
-def _view_url(url: str, background: BackgroundTasks):
+def _with_passthrough_marker(url: str) -> str:
+    parsed = urllib.parse.urlparse(url)
+    pairs = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+    if any(k == "_pdfvw" and v == "passthrough" for k, v in pairs):
+        return url
+    new_query = (f"{parsed.query}&{PASSTHROUGH_MARKER}"
+                 if parsed.query else PASSTHROUGH_MARKER)
+    return urllib.parse.urlunparse(parsed._replace(query=new_query))
+
+
+def _view_url(url: str, background: BackgroundTasks, light: bool = False):
     entry = CACHE_DIR / url_hash(url)
-    html = first_html(entry)
+    html = preferred_html(entry) if light else first_html(entry)
     if html is not None:
+        if is_entry_disabled(entry.name):
+            return RedirectResponse(
+                _with_passthrough_marker(_strip_passthrough(url)),
+                status_code=307,
+            )
         background.add_task(visits.record, entry.name, "url")
         return FileResponse(html, media_type="text/html; charset=utf-8")
     # Cache miss: 307 to the original URL, but tag it with a marker so the
     # browser extension's allow-rule short-circuits the redirect match —
     # otherwise clicks on .pdf links would loop (ext redirects → daemon 307s
     # → ext redirects → ...) until Chromium ERR_TOO_MANY_REDIRECTS.
-    parsed = urllib.parse.urlparse(url)
-    new_query = (f"{parsed.query}&{PASSTHROUGH_MARKER}"
-                 if parsed.query else PASSTHROUGH_MARKER)
-    passthrough = urllib.parse.urlunparse(parsed._replace(query=new_query))
-    return RedirectResponse(passthrough, status_code=307)
+    return RedirectResponse(_with_passthrough_marker(url), status_code=307)
 
 
 # -----------------------------------------------------------------------------
@@ -375,6 +514,296 @@ def _strip_passthrough(url: str) -> str:
     return urllib.parse.urlunparse(parsed._replace(query=new_query))
 
 
+def _load_disabled_hashes() -> set[str]:
+    try:
+        data = json.loads(DISABLED_FILE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return set()
+    if isinstance(data, dict):
+        values = data.get("disabled", [])
+    elif isinstance(data, list):
+        values = data
+    else:
+        values = []
+    return {
+        str(v)
+        for v in values
+        if isinstance(v, str) and _HASH_RE.match(v)
+    }
+
+
+def _write_disabled_hashes(hashes: set[str]) -> None:
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = DISABLED_FILE.with_suffix(DISABLED_FILE.suffix + ".tmp")
+    payload = {"disabled": sorted(hashes)}
+    tmp.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    tmp.replace(DISABLED_FILE)
+
+
+def is_entry_disabled(hash_: str) -> bool:
+    return hash_ in _load_disabled_hashes()
+
+
+def set_entry_disabled(hash_: str, disabled: bool) -> bool:
+    if not _HASH_RE.match(hash_):
+        raise HTTPException(400, "invalid hash")
+    hashes = _load_disabled_hashes()
+    before = hash_ in hashes
+    if disabled:
+        hashes.add(hash_)
+    else:
+        hashes.discard(hash_)
+    if (hash_ in hashes) != before:
+        _write_disabled_hashes(hashes)
+    return hash_ in hashes
+
+
+def _entry_source_ref(hash_: str) -> Optional[str]:
+    mapping = _load_mappings().get(hash_)
+    if not mapping:
+        return None
+    source_ref = mapping.get("source_ref")
+    return _strip_passthrough(source_ref) if source_ref else None
+
+
+def _entry_html(hash_: str, *, preferred: bool = True) -> Optional[pathlib.Path]:
+    entry_dir = CACHE_DIR / hash_
+    return preferred_html(entry_dir) if preferred else first_html(entry_dir)
+
+
+def _require_cached_entry(hash_: str) -> pathlib.Path:
+    if not _HASH_RE.match(hash_):
+        raise HTTPException(400, "invalid hash")
+    html = _entry_html(hash_)
+    if html is None:
+        raise HTTPException(404, f"no cached PDF viewer entry for hash {hash_}")
+    return html
+
+
+def _base_url(request: Request) -> str:
+    return str(request.base_url).rstrip("/")
+
+
+def _viewer_url_for_hash(hash_: str, request: Request) -> str:
+    html = _require_cached_entry(hash_)
+    return f"{_base_url(request)}/{hash_}/{urllib.parse.quote(html.name)}"
+
+
+def _file_url_for_path(path: str) -> str:
+    return pathlib.Path(path).expanduser().resolve().as_uri()
+
+
+def _native_browser_url_for_hash(hash_: str, request: Request) -> str:
+    _require_cached_entry(hash_)
+    source_ref = _entry_source_ref(hash_)
+    if source_ref and source_ref.startswith("/"):
+        return _file_url_for_path(source_ref)
+    if source_ref and source_ref.startswith(("http://", "https://")):
+        return _with_passthrough_marker(source_ref)
+    return _native_url_for_hash(hash_, request)
+
+
+def _native_url_for_hash(hash_: str, request: Request) -> str:
+    _require_cached_entry(hash_)
+    return f"{_base_url(request)}/native?hash={urllib.parse.quote(hash_)}"
+
+
+def _cached_source_pdf(hash_: str) -> Optional[pathlib.Path]:
+    source_dir = CACHE_DIR / hash_ / "_source"
+    if not source_dir.is_dir():
+        return None
+    matches = sorted(source_dir.glob("*.pdf"))
+    return matches[0] if matches else None
+
+
+def _local_path_from_file_url(url: str) -> pathlib.Path:
+    parsed = urllib.parse.urlparse(url)
+    path = urllib.parse.unquote(parsed.path)
+    return pathlib.Path(path).expanduser()
+
+
+def _hash_for_local_path(path: pathlib.Path) -> Optional[str]:
+    mapped = _mapped_hash_for_path(path)
+    if mapped:
+        return mapped
+    try:
+        resolved = path.expanduser().resolve(strict=True)
+    except FileNotFoundError:
+        return None
+    if not resolved.is_file():
+        return None
+    try:
+        return content_hash(resolved)
+    except OSError:
+        return None
+
+
+def _daemon_host(parsed: urllib.parse.ParseResult) -> bool:
+    if parsed.scheme not in {"http", "https"}:
+        return False
+    try:
+        port = parsed.port
+    except ValueError:
+        return False
+    return (parsed.hostname in {"localhost", "127.0.0.1", "::1"}
+            and port == 7435)
+
+
+def _hash_for_browser_url(url: str) -> Optional[str]:
+    clean_url = _strip_passthrough(url)
+    parsed = urllib.parse.urlparse(clean_url)
+
+    if _daemon_host(parsed):
+        match = re.match(r"^/([a-f0-9]{6,32})(?:/|$)", parsed.path)
+        if match:
+            return match.group(1)
+
+        query = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
+        if parsed.path == "/native":
+            hash_arg = query.get("hash", [None])[0]
+            if hash_arg and _HASH_RE.match(hash_arg):
+                return hash_arg
+        if parsed.path in {"/view", "/view-light", "/native"}:
+            path_arg = query.get("path", [None])[0]
+            url_arg = query.get("url", [None])[0]
+            if path_arg:
+                return _hash_for_local_path(pathlib.Path(path_arg))
+            if url_arg:
+                return url_hash(_strip_passthrough(url_arg))
+        if parsed.path in {"/view-raw", "/view-light-raw"} and parsed.query:
+            return url_hash(_strip_passthrough(parsed.query))
+
+    if parsed.scheme == "file":
+        return _hash_for_local_path(_local_path_from_file_url(clean_url))
+    if parsed.scheme in {"http", "https"} and parsed.netloc:
+        return url_hash(clean_url)
+    return None
+
+
+def _native_response_for_hash(hash_: str):
+    _require_cached_entry(hash_)
+    source_ref = _entry_source_ref(hash_)
+    if source_ref and source_ref.startswith("/"):
+        path = pathlib.Path(source_ref).expanduser()
+        if not path.is_file():
+            raise HTTPException(404, f"source PDF not found: {source_ref}")
+        return FileResponse(
+            path,
+            media_type="application/pdf",
+            filename=path.name,
+            content_disposition_type="inline",
+        )
+
+    cached_pdf = _cached_source_pdf(hash_)
+    if cached_pdf is not None:
+        return FileResponse(
+            cached_pdf,
+            media_type="application/pdf",
+            filename=cached_pdf.name,
+            content_disposition_type="inline",
+        )
+
+    if source_ref and source_ref.startswith(("http://", "https://")):
+        return RedirectResponse(_with_passthrough_marker(source_ref), status_code=307)
+
+    raise HTTPException(404, f"no native PDF source for hash {hash_}")
+
+
+@app.get("/native")
+def native_pdf(
+    hash_: Optional[str] = Query(None, alias="hash"),
+    path: Optional[str] = Query(None, description="absolute local path"),
+    url: Optional[str] = Query(None, description="http(s) URL"),
+):
+    provided = [v is not None for v in (hash_, path, url)].count(True)
+    if provided != 1:
+        raise HTTPException(400, "provide exactly one of: hash, path, url")
+
+    if hash_ is not None:
+        return _native_response_for_hash(hash_)
+    if path is not None:
+        try:
+            p = pathlib.Path(path).expanduser().resolve(strict=True)
+        except FileNotFoundError:
+            raise HTTPException(404, f"file not found: {path}")
+        if not p.is_file():
+            raise HTTPException(400, f"not a regular file: {path}")
+        return FileResponse(
+            p,
+            media_type="application/pdf",
+            filename=p.name,
+            content_disposition_type="inline",
+        )
+
+    assert url is not None
+    hash_for_url = url_hash(url)
+    cached_pdf = _cached_source_pdf(hash_for_url)
+    if cached_pdf is not None:
+        return FileResponse(
+            cached_pdf,
+            media_type="application/pdf",
+            filename=cached_pdf.name,
+            content_disposition_type="inline",
+        )
+    return RedirectResponse(_with_passthrough_marker(url), status_code=307)
+
+
+class DisabledRequest(BaseModel):
+    disabled: bool
+    current_url: Optional[str] = None
+
+
+@app.put("/entry/{hash_}/disabled")
+def update_entry_disabled(hash_: str, body: DisabledRequest, request: Request):
+    _require_cached_entry(hash_)
+    disabled = set_entry_disabled(hash_, body.disabled)
+    _queue_extension_sync_signal(hash_, "entry-disabled")
+    target_url = (
+        _native_browser_url_for_hash(hash_, request)
+        if disabled else _viewer_url_for_hash(hash_, request)
+    )
+    extension_navigation_queued = False
+    if disabled and body.current_url:
+        _queue_navigate_signal(body.current_url, target_url)
+        extension_navigation_queued = True
+    return {
+        "hash": hash_,
+        "disabled": disabled,
+        "target_url": target_url,
+        "native_url": _native_url_for_hash(hash_, request),
+        "native_browser_url": _native_browser_url_for_hash(hash_, request),
+        "viewer_url": _viewer_url_for_hash(hash_, request),
+        "extension_navigation_queued": extension_navigation_queued,
+    }
+
+
+class ExtensionToggleRequest(BaseModel):
+    url: str
+
+
+@app.post("/extension/toggle")
+def extension_toggle(body: ExtensionToggleRequest, request: Request):
+    hash_ = _hash_for_browser_url(body.url)
+    if not hash_:
+        raise HTTPException(404, "could not resolve current tab to a cached PDF")
+    _require_cached_entry(hash_)
+
+    disabled = set_entry_disabled(hash_, not is_entry_disabled(hash_))
+    _queue_extension_sync_signal(hash_, "extension-toggle")
+    target_url = (
+        _native_browser_url_for_hash(hash_, request)
+        if disabled else _viewer_url_for_hash(hash_, request)
+    )
+    return {
+        "hash": hash_,
+        "disabled": disabled,
+        "target_url": target_url,
+        "native_url": _native_url_for_hash(hash_, request),
+        "native_browser_url": _native_browser_url_for_hash(hash_, request),
+        "viewer_url": _viewer_url_for_hash(hash_, request),
+    }
+
+
 @app.delete("/mapping/{hash_}")
 def delete_mapping(hash_: str):
     """Wipe a cache entry: drop its mappings.tsv row, rmtree the dir, forget visits.
@@ -416,6 +845,10 @@ def delete_mapping(hash_: str):
             removed_dir = not resolved.exists()
 
     visits_deleted = visits.forget(hash_)
+    was_disabled = is_entry_disabled(hash_)
+    set_entry_disabled(hash_, False)
+    if was_disabled:
+        _queue_extension_sync_signal(hash_, "mapping-delete")
 
     if not (mapping_dropped or removed_dir):
         raise HTTPException(404, f"no cache entry for hash {hash_}")
@@ -426,6 +859,7 @@ def delete_mapping(hash_: str):
         "mapping_dropped": mapping_dropped,
         "removed_dir": removed_dir,
         "visits_deleted": visits_deleted,
+        "disabled": False,
     }
 
 
@@ -473,32 +907,45 @@ def rename_entry(hash_: str, body: RenameRequest):
 
     old_stem = html.stem
     if old_stem == new_name:
+        light = light_html_for(html)
         return {
             "hash": hash_,
             "old_name": old_stem,
             "new_name": new_name,
             "renamed": False,
             "href": f"/{hash_}/{html.name}",
+            "canonical_href": f"/{hash_}/{html.name}",
+            "light_href": f"/{hash_}/{light.name}" if light.is_file() else None,
         }
 
     new_path = entry_dir / (new_name + ".html")
-    if new_path.exists():
+    new_light_path = entry_dir / (new_name + LIGHT_HTML_SUFFIX)
+    if new_path.exists() or new_light_path.exists():
         raise HTTPException(409, f"name already in use: {new_name}")
+
+    def rewrite_title(path: pathlib.Path) -> None:
+        try:
+            text = path.read_text(encoding="utf-8")
+            new_text, n = re.subn(
+                r"<title>.*?</title>",
+                f"<title>{_html.escape(new_name)}</title>",
+                text, count=1, flags=re.DOTALL,
+            )
+            if n:
+                path.write_text(new_text, encoding="utf-8")
+        except OSError:
+            pass
 
     # Rewrite <title> in place so the next fresh load shows the new name
     # in the browser tab. The overlay also patches document.title live, so
     # the current tab updates without a reload.
-    try:
-        text = html.read_text(encoding="utf-8")
-        new_text, n = re.subn(
-            r"<title>.*?</title>",
-            f"<title>{_html.escape(new_name)}</title>",
-            text, count=1, flags=re.DOTALL,
-        )
-        if n:
-            html.write_text(new_text, encoding="utf-8")
-    except OSError:
-        pass
+    rewrite_title(html)
+    old_light_path = light_html_for(html)
+    light_renamed = False
+    if old_light_path.is_file():
+        rewrite_title(old_light_path)
+        old_light_path.rename(new_light_path)
+        light_renamed = True
 
     html.rename(new_path)
 
@@ -530,6 +977,9 @@ def rename_entry(hash_: str, body: RenameRequest):
         "new_name": new_name,
         "renamed": True,
         "href": f"/{hash_}/{new_path.name}",
+        "canonical_href": f"/{hash_}/{new_path.name}",
+        "light_href": f"/{hash_}/{new_light_path.name}" if light_renamed else None,
+        "light_renamed": light_renamed,
         "frecency_boosted": boosted,
     }
 
@@ -550,6 +1000,7 @@ def library():
         html = first_html(entry_dir)
         if html is None:
             continue
+        light = light_html_for(html)
         v = scores.get(hash_, {
             "raw_count": 0,
             "rank": 0,
@@ -565,6 +1016,8 @@ def library():
             "source_ref": source_ref,
             "search_text": _library_search_text(name, source_ref),
             "href": f"/{hash_}/{html.name}",
+            "canonical_href": f"/{hash_}/{html.name}",
+            "light_href": f"/{hash_}/{light.name}" if light.is_file() else None,
             "count": v["raw_count"],
             "rank": v["rank"],
             "last_seen": v["last_seen"],

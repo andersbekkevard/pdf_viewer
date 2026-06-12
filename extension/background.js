@@ -11,8 +11,10 @@
 // not percent-encoded. The daemon reads the raw query string there so signed
 // URLs containing `&` stay intact.
 //
-// Ordering: dynamic rules use priority 3, the static redirect uses 1, and
-// the passthrough allow uses 2. Highest priority wins, so:
+// Ordering: disabled allow rules use priority 4, active dynamic redirects use
+// 3, the passthrough allow uses 2, and the static redirect uses 1. Highest
+// priority wins, so:
+//   - disabled cached URL click → dynamic allow (p4) → native viewer
 //   - cached URL click → dynamic (p3) → /view-raw serves HTML
 //   - unknown `.pdf$` URL → static (p1) → /view-raw 307s with marker
 //   - 307-target with marker → allow (p2) → native viewer
@@ -101,13 +103,15 @@ async function _runSync() {
             }
             rule = {
                 id: ruleIdCounter++,
-                priority: 3,
-                action: {
-                    type: 'redirect',
-                    redirect: {
-                        url: `${DAEMON}/view?path=${encodeURIComponent(entry.path)}`
-                    }
-                },
+                priority: entry.disabled ? 4 : 3,
+                action: entry.disabled
+                    ? { type: 'allow' }
+                    : {
+                        type: 'redirect',
+                        redirect: {
+                            url: `${DAEMON}/view?path=${encodeURIComponent(entry.path)}`
+                        }
+                    },
                 condition: {
                     urlFilter,
                     resourceTypes: ['main_frame']
@@ -128,13 +132,15 @@ async function _runSync() {
             }
             rule = {
                 id: ruleIdCounter++,
-                priority: 3,
-                action: {
-                    type: 'redirect',
-                    redirect: {
-                        regexSubstitution: `${DAEMON}/view-raw?\\0`
-                    }
-                },
+                priority: entry.disabled ? 4 : 3,
+                action: entry.disabled
+                    ? { type: 'allow' }
+                    : {
+                        type: 'redirect',
+                        redirect: {
+                            regexSubstitution: `${DAEMON}/view-raw?\\0`
+                        }
+                    },
                 condition: {
                     regexFilter,
                     resourceTypes: ['main_frame'],
@@ -272,6 +278,14 @@ async function navigateTab({ from_url, to_url }) {
     }
 }
 
+async function handleDaemonSignal(sig) {
+    if (sig && sig.type === 'sync_rules') {
+        await syncCachedRules();
+        return;
+    }
+    await navigateTab(sig || {});
+}
+
 async function startNavPollLoop() {
     if (_navPollRunning) return;
     _navPollRunning = true;
@@ -292,7 +306,7 @@ async function startNavPollLoop() {
                 }
                 const signals = await resp.json();
                 for (const sig of signals) {
-                    await navigateTab(sig);
+                    await handleDaemonSignal(sig);
                 }
             } catch (e) {
                 // Daemon down / network hiccup. Back off before retry so we
@@ -306,6 +320,39 @@ async function startNavPollLoop() {
     }
 }
 
+async function toggleCurrentPdf(tab) {
+    if (!tab || !tab.id || !tab.url) {
+        console.warn('pdf_viewer: toolbar toggle missing active tab URL');
+        return;
+    }
+
+    let body;
+    try {
+        const resp = await fetch(`${DAEMON}/extension/toggle`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ url: tab.url }),
+        });
+        if (!resp.ok) {
+            console.warn(`pdf_viewer: /extension/toggle → ${resp.status}`);
+            return;
+        }
+        body = await resp.json();
+    } catch (e) {
+        console.warn('pdf_viewer: toolbar toggle failed —', e.message);
+        return;
+    }
+
+    await syncCachedRules();
+    if (body && body.target_url) {
+        await chrome.tabs.update(tab.id, { url: body.target_url });
+        console.log(
+            `pdf_viewer: toolbar toggled ${body.hash} ` +
+            `${body.disabled ? 'OFF' : 'ON'}`
+        );
+    }
+}
+
 // Fire on every plausible re-entry point, so new conversions become
 // interceptable without a browser restart.
 chrome.runtime.onInstalled.addListener(() => {
@@ -315,6 +362,9 @@ chrome.runtime.onInstalled.addListener(() => {
 chrome.runtime.onStartup.addListener(() => {
     syncCachedRules();
     startNavPollLoop();
+});
+chrome.action.onClicked.addListener((tab) => {
+    toggleCurrentPdf(tab);
 });
 
 chrome.alarms.create(SYNC_ALARM, { periodInMinutes: 0.5 });

@@ -12,6 +12,9 @@
         "https://*/*",
         "file:///*"
     ],
+    "action": {
+        "default_title": "Toggle pdf_viewer for this PDF"
+    },
     "background": {
         "service_worker": "background.js"
     },

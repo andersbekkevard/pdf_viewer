@@ -45,6 +45,7 @@ cycling.
 | `:open <doc>` / `:o`         | Switch to another cached doc; completes against `/library` (visits-sorted)       |
 | `:rename <name>` / `:rn`     | Rename this PDF (changes the search name used by `:open` / ⌘K). Tab fills current |
 | `:path`                      | Copy this PDF's source path / URL (from `mappings.tsv`) to clipboard             |
+| `:disable` / `:native`       | Open this PDF in the native browser PDF viewer and disable custom-viewer redirects for this entry |
 | `:pin`                       | Toggle pin-to-center                                                             |
 | `:scrolloff 25` / `:so 25`   | Set scrolloff band to 25 % (0–50)                                                |
 | `:buffer 20` / `:buf 20`     | Set render buffer to ±20 pages                                                   |

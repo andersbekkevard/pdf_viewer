@@ -11,9 +11,12 @@
     document.addEventListener('DOMContentLoaded', init);
 
     function init() {
-        rewriteSpacerWidthsToPadding();
+        if (!isTextFlattenedLightDocument()) {
+            rewriteSpacerWidthsToPadding();
+        }
         killPdf2htmlExRenderLoop();
         disablePageRasterDragging();
+        mountExternalPageRasters();
         mountSidebarToggleButton();
         registerEscapeHandler();
         registerQuestionHandler();
@@ -42,6 +45,11 @@
         mountSearch();
         applyAppearanceSettings();
         loadLibrary();
+    }
+
+    function isTextFlattenedLightDocument() {
+        return document.documentElement
+            && document.documentElement.hasAttribute('data-pdf2html-text-flattened');
     }
 
     // Module-level page tracker. mountPageCounter dispatches pdf2html-page-change
@@ -445,6 +453,7 @@
                 shift = Math.max(0, Math.round(sidebarRect.right + gutter - naturalLeft));
             }
             document.documentElement.style.setProperty('--pdf2html-page-shift', shift + 'px');
+            document.body.classList.toggle('pdf2html-page-shifted', shift > 0);
         }
 
         function step() {
@@ -1082,6 +1091,64 @@
         }
     }
 
+    function mountExternalPageRasters() {
+        var rasters = document.querySelectorAll('#page-container .pc > img.bi[data-pdf2html-src]');
+        if (!rasters.length) return;
+        var pc = document.getElementById('page-container');
+        var pages = Array.prototype.slice.call(document.querySelectorAll('#page-container .pf'));
+        var preloadPx = 3500;
+        var raf = null;
+
+        function loadPage(pf) {
+            var imgs = pf.querySelectorAll('img.bi[data-pdf2html-src]');
+            for (var i = 0; i < imgs.length; i++) {
+                var img = imgs[i];
+                var src = img.getAttribute('data-pdf2html-src');
+                if (!src) continue;
+                if (img.getAttribute('src') !== src) img.setAttribute('src', src);
+                img.dataset.pdf2htmlRasterLoaded = '1';
+            }
+        }
+
+        function unloadPage(pf) {
+            var imgs = pf.querySelectorAll('img.bi[data-pdf2html-src]');
+            for (var i = 0; i < imgs.length; i++) {
+                var img = imgs[i];
+                if (!img.hasAttribute('src')) continue;
+                img.removeAttribute('src');
+                delete img.dataset.pdf2htmlRasterLoaded;
+            }
+        }
+
+        function sync() {
+            raf = null;
+            var rootRect = pc ? pc.getBoundingClientRect() : {
+                top: 0,
+                bottom: window.innerHeight,
+            };
+            var top = rootRect.top - preloadPx;
+            var bottom = rootRect.bottom + preloadPx;
+            for (var i = 0; i < pages.length; i++) {
+                var rect = pages[i].getBoundingClientRect();
+                if (rect.bottom >= top && rect.top <= bottom) {
+                    loadPage(pages[i]);
+                } else {
+                    unloadPage(pages[i]);
+                }
+            }
+        }
+
+        function scheduleSync() {
+            if (raf) return;
+            raf = requestAnimationFrame(sync);
+        }
+
+        if (pc) pc.addEventListener('scroll', scheduleSync, { passive: true });
+        window.addEventListener('resize', scheduleSync);
+        document.addEventListener('pdf2html-page-counter-refresh', scheduleSync);
+        scheduleSync();
+    }
+
 
     // ------------------------------------------------------------------------
     // Floating ☰ button top-left — click or ⌘. / ⌘B toggles sidebar.
@@ -1398,6 +1465,7 @@
                     + cRow(':open <doc>', ':o', 'Open another cached doc')
                     + cRow(':rename <name>', ':rn', 'Rename this PDF (Tab fills current name)')
                     + cRow(':path', '—', 'Copy this PDF\'s source path / URL to clipboard')
+                    + cRow(':disable', ':native', 'Open native PDF and disable viewer for this file')
                     + cRow(':pin', '—', 'Toggle pin-to-center')
                     + cRow(':scrolloff N', ':so', 'Scrolloff band at N% (e.g. :so 25)')
                     + cRow(':buffer N', ':buf', 'Render ±N pages around viewport')
@@ -1570,6 +1638,42 @@
             }
         }
         return '';
+    }
+
+    function disableCurrentEntry() {
+        var hash = entryHash();
+        if (!hash) return;
+        fetch('/entry/' + encodeURIComponent(hash) + '/disabled', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ disabled: true, current_url: location.href }),
+        })
+            .then(function (r) {
+                return r.json().then(
+                    function (j) { return { ok: r.ok, body: j }; },
+                    function () { return { ok: r.ok, body: null }; }
+                );
+            })
+            .then(function (resp) {
+                if (!resp.ok) {
+                    var msg = resp.body && resp.body.detail
+                        ? String(resp.body.detail)
+                        : 'native fallback failed';
+                    console.warn('[disable]', msg);
+                    return;
+                }
+                var info = resp.body || {};
+                var target = info.target_url || info.native_browser_url || info.native_url;
+                if (!target) return;
+                if (info.extension_navigation_queued) {
+                    setTimeout(function () {
+                        if (location.href !== target) location.replace(target);
+                    }, 3000);
+                    return;
+                }
+                location.replace(target);
+            })
+            .catch(function (e) { console.warn('[disable] failed:', e); });
     }
 
     // Middle-ellipsis truncation. Long absolute paths (iCloud, nested
@@ -1948,6 +2052,9 @@
               var ref = currentSourceRef();
               if (ref) writeClip(ref);
           } },
+        { name: 'disable', aliases: ['native'], desc: 'open native PDF and disable viewer for this file',
+          argCompleter: null,
+          handler: function () { disableCurrentEntry(); } },
         { name: 'rename',  aliases: ['rn'],
           desc: function () {
               var current = currentEntryName();

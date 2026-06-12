@@ -202,6 +202,31 @@ body.pdf2html-search-entered ::-moz-selection { background: transparent; color: 
     user-select: none;
 }
 
+#page-container .pc > img.bi[data-pdf2html-src]:not([src]) {
+    visibility: hidden;
+}
+
+/* Light cache variants keep selectable/findable text, but use the page raster
+   as the visual source. This avoids repainting a second full text copy over
+   thousands of pages after the converter flattens pdf2htmlEX's glyph spans. */
+body.pdf2html-light #page-container .t,
+body.pdf2html-light #page-container .t * {
+    color: transparent !important;
+    text-shadow: none !important;
+}
+
+body.pdf2html-light #page-container .pdf2html-page-text {
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+    overflow: hidden;
+    white-space: pre-wrap;
+    color: transparent !important;
+    text-shadow: none !important;
+    user-select: text;
+    font: 16px/1.35 sans-serif;
+}
+
 
 /* ---- Sidebar visibility + space-taking mode ----
    Hidden by default; body.sidebar-shown reveals it. BOTH rules needed —
@@ -214,8 +239,8 @@ body.pdf2html-search-entered ::-moz-selection { background: transparent; color: 
 
 body:not(.sidebar-shown) #sidebar        { display: none !important; }
 body.sidebar-shown       #sidebar        { display: flex !important; }
-#page-container                           { left: 0 !important; }
-.pf {
+#page-container { left: 0 !important; }
+body.pdf2html-page-shifted .pf {
     transform: translateX(var(--pdf2html-page-shift));
 }
 
