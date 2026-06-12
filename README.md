@@ -158,7 +158,8 @@ What's not built: cross-device access over Tailscale (phase 8, optional).
 
 ```
 pdf_viewer/
-├── assets/overlay.{js,css}      # the overlay — all UX behavior
+├── assets/overlay*.js           # the overlay — ES modules (entry + leaves), all UX
+├── assets/overlay.css           # the overlay styles
 ├── scripts/
 │   ├── pdf2html-convert.sh      # convert: single PDF (file or url)
 │   ├── index-directory.sh       # index: recursive directory walk

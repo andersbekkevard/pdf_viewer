@@ -18,10 +18,14 @@ component overview.
 
 Six loosely-coupled parts, each with a narrow job:
 
-- **`assets/overlay.{js,css}`** — all UX behavior (~2.5k LoC JS,
-  ~1.2k LoC CSS). Served live at `/_assets/` via a symlink from the
-  cache dir, so edits reload on ⌘⇧R without reconversion. This is
-  where ~90 % of day-to-day work happens.
+- **`assets/overlay*.js` + `assets/overlay.css`** — all UX behavior
+  (~2.5k LoC JS, ~1.2k LoC CSS). `overlay.js` is the ES-module entry
+  point (loaded `type="module"`, no bundler / no build step); it owns
+  shared closure state and imports leaf modules via plain relative
+  specifiers — currently `overlay-finger.js` (finger/hint mode), wired
+  through a small `core` object at `init()`. Served live at `/_assets/`
+  via a symlink from the cache dir, so edits reload on ⌘⇧R without
+  reconversion. This is where ~90 % of day-to-day work happens.
 - **`scripts/pdf2html-convert.sh`** — single-PDF conversion
   (`file://` or `https://`). Hashes, downloads if remote, runs the native
   arm64 pdf2htmlEX binary (no Docker — ADR 0011), injects the overlay.

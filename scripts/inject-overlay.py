@@ -28,15 +28,25 @@ import html as _html
 
 REPO_DIR = pathlib.Path(__file__).resolve().parents[1]
 ASSETS_DIR = REPO_DIR / "assets"
-_ASSET_FILES = ("overlay.js", "overlay.css")
+
+
+def _asset_files() -> list[pathlib.Path]:
+    """All overlay assets that affect the rendered viewer: every overlay*.js
+    module (the entry overlay.js plus any extracted overlay-<seam>.js leaves)
+    plus overlay.css. Sorted by name for a deterministic, order-stable hash."""
+    js = sorted(ASSETS_DIR.glob("overlay*.js"))
+    css = [ASSETS_DIR / "overlay.css"]
+    return js + css
 
 
 def asset_version() -> str:
-    """First 10 hex chars of sha256 over the concatenated bytes of
-    overlay.js + overlay.css. Stable across runs when assets are unchanged."""
+    """First 10 hex chars of sha256 over the concatenated bytes of every
+    overlay module + overlay.css (deterministic name order). Editing any
+    module — or adding/removing one — changes the hash. Stable across runs
+    when assets are unchanged."""
     h = hashlib.sha256()
-    for name in _ASSET_FILES:
-        h.update((ASSETS_DIR / name).read_bytes())
+    for path in _asset_files():
+        h.update(path.read_bytes())
     return h.hexdigest()[:10]
 
 
@@ -78,11 +88,18 @@ def inject(html: str, stem: str, version: str, entry_hash: str = "") -> str:
     html = re.sub(r'<link id="pdf2html-overlay-css"[^>]*>\s*', '', html)
     html = re.sub(r'<script id="pdf2html-overlay-js"[^>]*></script>\s*', '', html)
 
+    # overlay.js is now an ES module entry point that imports sibling
+    # overlay-<seam>.js leaves via plain relative specifiers. type="module"
+    # scripts defer by default (same post-parse timing as the old `defer`
+    # classic script), so the render-loop kill still runs after HTML parse.
+    # The ?v= busts the entry module on asset change; the imported leaves are
+    # busted by the daemon's ETag + must-revalidate (no query strings on the
+    # import specifiers, which would otherwise break module resolution).
     overlay_tags = (
         f'<link id="pdf2html-overlay-css" rel="stylesheet" '
         f'href="/_assets/overlay.css?v={version}">'
-        f'<script id="pdf2html-overlay-js" '
-        f'src="/_assets/overlay.js?v={version}" defer></script>'
+        f'<script id="pdf2html-overlay-js" type="module" '
+        f'src="/_assets/overlay.js?v={version}"></script>'
     )
     html = html.replace('</head>', overlay_tags + '</head>', 1)
     return html
