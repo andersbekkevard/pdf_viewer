@@ -29,7 +29,7 @@ as an A/B reference and must not be touched.
 │   ├── <stem>.outline.js + fonts/images/...  pdf2htmlEX output assets
 │   ├── _source/         downloaded source PDF (remote) or none (local)
 │   │   └── document.pdf
-│   └── meta.json        source URL/path, display name, timestamps
+│   └── meta.json        pdfinfo fields + conversion provenance (see below)
 └── ...
 ```
 
@@ -95,6 +95,54 @@ Resolution order:
    real filename, e.g. `filename*=UTF-8''sqlite(1).pdf`).
 2. Fall back to the last path segment, append `.pdf` if missing.
 3. Last resort: the hash itself.
+
+## meta.json: pdfinfo fields + provenance
+
+`<hash>/meta.json` carries two clearly-separated groups of keys, written by
+two different owners that **merge** rather than overwrite, so either can run
+first and neither clobbers the other:
+
+- **pdfinfo-derived fields** (owner: `scripts/extract-meta.py`, driven by
+  `scripts/extract-pdf-meta.sh`): `title`, `author`, `subject`, `keywords`,
+  `producer`, `creator`, `pages`, `year`, `created`, `file_size`. Missing
+  fields are omitted, not null. A re-run refreshes these and preserves
+  everything else.
+- **`provenance`** (owner: the *pipeline* — `scripts/write-provenance.py`,
+  called from `pdf2html-convert.sh`, both indexers, and `upgrade-cache.sh
+  --mode=reconvert`): records which converter produced the HTML.
+
+```jsonc
+{
+  "pages": 1137,            // pdfinfo-derived
+  "file_size": 14190884,
+  "provenance": {           // pipeline-derived
+    "converter": "native-arm64",   // or "docker-amd64"
+    "pdf2htmlex": "0.18.8.rc2",
+    "poppler": "24.06.1",          // 0.89.0 for the Docker era
+    "converted_at": "2026-06-12",  // ISO date; live conversions only
+    "overlay_version": 25,         // OVERLAY_VERSION at injection time
+    "backfilled": true             // present only on backfilled entries
+  }
+}
+```
+
+Versions are parsed from the binary at convert time (`pdf2htmlEX --version`),
+so reconversions after a toolchain upgrade stay accurate.
+
+`scripts/backfill-provenance.sh` is a one-shot that stamped provenance into
+every pre-existing entry using a documented date heuristic: everything cached
+before **2026-06-12** is `docker-amd64` (poppler 0.89.0), with the native
+2026-06-12 migration entries (hash `aa899dbceecd0cfb` plus any row timestamped
+`2026-06-12` in `mappings.tsv`) marked `native-arm64`. Backfilled entries
+carry `"backfilled": true` and no `converted_at`. The backfill writes only
+`meta.json` and never touches HTML or any other cache file; it is idempotent
+(skips entries that already have a `provenance` object).
+
+Answer "which entries are Docker-era" in one command:
+
+```bash
+rg -l '"converter": "docker-amd64"' ~/.cache/pdf_viewer/*/meta.json
+```
 
 ## Cache-miss behavior
 

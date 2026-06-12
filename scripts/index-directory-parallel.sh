@@ -109,7 +109,7 @@ rmdir "$MAP_LOCK" 2>/dev/null  # clear stale map lock too
 # ---------------------------------------------------------------------------
 worker() {
     local pdf="$1"
-    local pdf_name hash out_dir existing_html out_name rc
+    local pdf_name hash out_dir existing_html out_name rc did_convert=0
 
     [[ -f "$pdf" ]] || { log "[miss] $pdf"; return 0; }
 
@@ -151,6 +151,7 @@ worker() {
                         log "[skip-light-disabled] $pdf"
                     fi
                     rc=0
+                    did_convert=1
                 else
                     log "[fail-inject] $pdf"
                     rc=1
@@ -180,8 +181,18 @@ worker() {
         log "[skip-cached] $pdf"
     fi
 
-    # Metadata — non-fatal.
-    if [[ ! -f "$out_dir/meta.json" ]]; then
+    # Conversion provenance — pipeline-owned, only on a real conversion.
+    # Merges into meta.json; versions parsed from the binary.
+    if [[ "$did_convert" == "1" ]]; then
+        python3 "$REPO_DIR/scripts/write-provenance.py" "$out_dir/meta.json" \
+            --converter native-arm64 --bin "$NATIVE_BIN" \
+            --overlay-version "$OVERLAY_VERSION" \
+            >>"$LOG_FILE" 2>&1 || log "[fail-provenance] $pdf"
+    fi
+
+    # Metadata — non-fatal. Gate on pdfinfo keys, not file existence — a
+    # provenance-only meta.json may have just been created above.
+    if ! python3 -c "import json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if any(k in d for k in ('pages','title','author','file_size')) else 1)" "$out_dir/meta.json" 2>/dev/null; then
         "$REPO_DIR/scripts/extract-pdf-meta.sh" "$pdf" "$out_dir/meta.json" \
             >>"$LOG_FILE" 2>&1 || log "[fail-meta] $pdf"
     fi

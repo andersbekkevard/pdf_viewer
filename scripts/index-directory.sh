@@ -111,6 +111,7 @@ for idx in "${!PDFS[@]}"; do
     # Cache hit if *any* html exists in this hash dir — two PDFs that share
     # content (e.g. the same textbook under different filenames) collide on
     # hash and point at the same converted bundle.
+    did_convert=0
     existing_html=$(find "$out_dir" -maxdepth 1 -type f -name '*.html' ! -name '*.light.html' | sort | head -1)
     if [[ -n "$existing_html" ]]; then
         out_name=$(basename "$existing_html")
@@ -151,12 +152,25 @@ for idx in "${!PDFS[@]}"; do
             log "[${n}/${total}] light variant skipped pending search/selection/resolution fixes: $pdf"
         fi
         converted=$((converted + 1))
+        did_convert=1
+    fi
+
+    # Conversion provenance — pipeline-owned, only on a real conversion.
+    # Merges into meta.json (preserving pdfinfo fields); versions parsed from
+    # the binary so reconversions after a toolchain upgrade stay accurate.
+    if [[ "$did_convert" == "1" ]]; then
+        python3 "$REPO_DIR/scripts/write-provenance.py" "$out_dir/meta.json" \
+            --converter native-arm64 --bin "$NATIVE_BIN" \
+            --overlay-version "$OVERLAY_VERSION" \
+            >>"$LOG_FILE" 2>&1 \
+            || log "[${n}/${total}] provenance write failed for $pdf"
     fi
 
     # Metadata — non-fatal if it fails. Written whether this was a fresh
     # convert or a cache hit (covers entries converted before meta.json
-    # was plumbed in).
-    if [[ ! -f "$out_dir/meta.json" ]]; then
+    # was plumbed in). Gate on pdfinfo keys, not file existence — a
+    # provenance-only meta.json may have just been created above.
+    if ! python3 -c "import json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if any(k in d for k in ('pages','title','author','file_size')) else 1)" "$out_dir/meta.json" 2>/dev/null; then
         "$REPO_DIR/scripts/extract-pdf-meta.sh" "$pdf" "$out_dir/meta.json" \
             >>"$LOG_FILE" 2>&1 \
             || log "[${n}/${total}] meta extraction failed for $pdf"

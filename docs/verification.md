@@ -68,6 +68,28 @@ br sync --flush-only
 If verification is blocked, do not close the bead. Add a comment explaining the
 blocker, what was attempted, and the exact missing artifact or user action.
 
+## Overlay smoke test (standard pre-close check for overlay beads)
+
+`scripts/smoke-viewer.sh` is the standard pre-close check for any bead that
+touches `assets/overlay.{js,css}`. It is a single command that exits non-zero
+on any failure:
+
+```bash
+scripts/smoke-viewer.sh
+```
+
+It converts `test/fixtures/basic_text.pdf` with the real native pdf2htmlEX
+binary into a temp cache entry, injects the live overlay, and runs headless
+Chromium (the locally-cached Playwright — no repo dependency) against the real
+daemon on `:7435`, asserting: expected `.pf` page count,
+`#pdf2html-pageno-current` present, sidebar DOM present,
+`pdf2htmlEX.defaultViewer.render_timer === null`, `window.find('Normal')`, zero
+console errors, and zero failed `/_assets/` requests. The temp entry is
+trap-cleaned on exit. The daemon must already be up — the script never starts
+it. Run it green before closing an overlay bead; a richer interactive proof
+from the list below is still warranted when the bead changes behavior the smoke
+test does not assert.
+
 ## Pick the right proof
 
 Use the smallest proof that exercises the changed behavior:

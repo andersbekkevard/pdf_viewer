@@ -181,6 +181,7 @@ fi
 # Convert if not cached. Native pdf2htmlEX is only invoked here, on a real
 # cache miss.
 # -----------------------------------------------------------------------------
+DID_CONVERT=0
 if [[ ! -f "$OUT_DIR/$OUT_NAME" ]]; then
     notify "Converting $PDF_NAME" "Cache miss — may take up to ~2 minutes"
     [[ -x "$NATIVE_BIN" ]] || \
@@ -192,6 +193,7 @@ if [[ ! -f "$OUT_DIR/$OUT_NAME" ]]; then
         >>"$LOG_FILE" 2>&1 \
         || fail "pdf2htmlEX conversion failed (see $LOG_FILE)"
     log "convert done: $OUT_NAME"
+    DID_CONVERT=1
 fi
 
 # Inject title, favicon, and overlay <link>/<script> tags (idempotent).
@@ -287,12 +289,27 @@ curl -sS --max-time 2 -X POST \
 # been swapped (especially for the 1-2min cache-miss case).
 notify "Opened $PDF_NAME"
 
+# Conversion provenance — pipeline-owned, written synchronously BEFORE the
+# backgrounded meta/thumb jobs so it can't race the pdfinfo merge. Versions
+# are parsed from the binary so reconversions after a toolchain upgrade stay
+# accurate. Both writers merge into meta.json, so order is immaterial for
+# correctness; doing it first just sidesteps a concurrent read-modify-write.
+# Only on a real conversion — a cache hit keeps its original provenance.
+if [[ "$DID_CONVERT" == "1" ]]; then
+    python3 "$REPO_DIR/scripts/write-provenance.py" "$OUT_DIR/meta.json" \
+        --converter native-arm64 --bin "$NATIVE_BIN" \
+        --overlay-version "$OVERLAY_VERSION" \
+        || log "provenance write failed for $PDF_NAME"
+fi
+
 # Meta + per-page thumbs run AFTER the tab-nav signal — both are non-critical
 # (overlay falls back to empty meta and skeleton thumb cards), and on 100+
 # page textbooks pdftocairo adds 5–15s that used to block the tab swap.
 # Run them in parallel; `wait` at end keeps this process alive until they
 # finish so log output stays coherent and no jobs get orphaned.
-if [[ ! -f "$OUT_DIR/meta.json" ]]; then
+# Gate on the pdfinfo keys, not mere file existence — write-provenance.py may
+# have just created a provenance-only meta.json above.
+if ! python3 -c "import json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if any(k in d for k in ('pages','title','author','file_size')) else 1)" "$OUT_DIR/meta.json" 2>/dev/null; then
     (
         "$REPO_DIR/scripts/extract-pdf-meta.sh" \
             "$PDF_DIR/$PDF_NAME" "$OUT_DIR/meta.json" \

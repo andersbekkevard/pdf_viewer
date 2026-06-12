@@ -134,6 +134,41 @@ feared.
   soft-skip if those are missing — the same Homebrew-dependency posture
   as the converter.
 
+### Distribution (portable install, no build tree)
+
+The local build tree (`~/dev/external/pdf2htmlEX_v2/`) is a one-off
+artifact — a fresh Mac or a lost `external/` tree leaves the installer
+with nothing to copy. To make the toolchain installable anywhere, the
+binary is also published as a **relocatable bundle** through a personal
+Homebrew tap:
+
+- **Tap**: `andersbekkevard/homebrew-tools`
+  (`brew tap andersbekkevard/tools`).
+- **Formula**: `pdf2htmlex` — a binary pour (not a from-source build) of
+  a relocatable bundle attached to a GitHub release
+  (`pdf2htmlex-v0.18.8.rc2-1`). The bundle ships the binary plus every
+  Homebrew dylib it links, copied into `lib/` with
+  `@executable_path/../lib` install names and ad-hoc re-signed, so it
+  needs **no `/opt/homebrew/*` dylibs at runtime** (`otool -L` shows zero
+  `/opt/homebrew` references across the binary and all 22 bundled libs).
+  The keg lays the bundle out under `libexec/{bin,lib,share}` so
+  `brew link` can't shadow real Homebrew kegs (cairo, glib, …) in
+  `/opt/homebrew/lib`; only the binary is symlinked into `bin`.
+- **Installer fallback**: `scripts/install-native-pdf2htmlex.sh` now tries
+  the local build tree first, then falls back to the brew keg
+  (`brew --prefix andersbekkevard/tools/pdf2htmlex`), copying
+  `bin` + `lib` + `share` into `~/.local/opt/pdf2htmlEX/` (the brew path
+  additionally populates `lib/`; the build-tree path leaves it absent
+  since that binary uses absolute `/opt/homebrew` links). The
+  `~/.local/opt/pdf2htmlEX/{bin,share}` contract the pipeline depends on
+  is unchanged.
+
+This is the fallback path from bead `pdfv-6el.1`. Encoding the full
+from-source build as a brew formula (so brew owns deps and arm64 rebuilds
+on any Mac) remains the preferred long-term shape; the relocatable bundle
+ships today and survives a `brew upgrade poppler` because its deps are
+bundled, not linked.
+
 ### Relationship to ADR 0004
 
 This ADR **supersedes the Docker-compute half of ADR 0004**. ADR 0004's

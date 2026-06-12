@@ -3,25 +3,43 @@
 # ============================================================================
 # pdf_viewer — install-native-pdf2htmlex.sh
 #
-# Installs a locally-built native macOS arm64 pdf2htmlEX (0.18.8.rc2,
-# poppler 24.06.1, fontforge 20230101) from the v2 build tree into a
-# stable, relocation-safe prefix at ~/.local/opt/pdf2htmlEX/.
+# Installs a native macOS arm64 pdf2htmlEX (0.18.8.rc2, poppler 24.06.1,
+# fontforge 20230101) into a stable, relocation-safe prefix at
+# ~/.local/opt/pdf2htmlEX/. Two source paths, tried in order:
 #
-# WHY: the built binary bakes its default data-dir into the build tree
-# (native/build/install/share/pdf2htmlEX). That path is fragile — deleting
-# or moving the build tree breaks the binary. This installer copies the
-# binary + share data into a stable prefix and the daemon/scripts then
-# always pass --data-dir explicitly, so the baked-in default is irrelevant.
+#   1. LOCAL BUILD TREE (preferred when present): the v2 build tree at
+#      ~/dev/external/pdf2htmlEX_v2. Its binary links Homebrew dylibs via
+#      absolute /opt/homebrew/opt/* paths — no bundled lib/ needed.
+#   2. HOMEBREW TAP (fallback on a machine without the build tree):
+#      `brew install andersbekkevard/tools/pdf2htmlex` ships a RELOCATABLE
+#      bundle — the binary plus every Homebrew dylib it needs, with
+#      @executable_path/../lib install names. The brew keg lays this out
+#      under libexec/{bin,lib,share}. This installer copies bin + lib +
+#      share out of that keg so the binary keeps finding its bundled libs.
+#
+# WHY: the local-build binary bakes its default data-dir into the build
+# tree (native/build/install/share/pdf2htmlEX). That path is fragile —
+# deleting or moving the build tree breaks the binary. This installer
+# copies the binary + share data into a stable prefix and the
+# daemon/scripts always pass --data-dir explicitly, so the baked-in
+# default is irrelevant.
 #
 # This script COPIES ONLY. It never rebuilds, never touches Docker, and
-# never hits the network. If the build artifacts are missing, it points
-# you at native/build.sh and exits.
+# never hits the network. If neither source is present it points you at
+# native/build.sh (or the tap) and exits.
 #
-# Runtime deps: the binary links several Homebrew dylibs (cairo, glib,
-# freetype, …) via /opt/homebrew/opt/* symlinks, plus poppler's runtime
-# data dir (/opt/homebrew/share/poppler). Those are runtime requirements,
-# not bundled. The installer WARNS (does not fail) if any linked dylib or
-# the poppler data dir is missing.
+# Runtime deps differ by source:
+#   - From the build tree: the binary links several Homebrew dylibs
+#     (cairo, glib, freetype, …) via /opt/homebrew/opt/* and needs the
+#     poppler data dir (/opt/homebrew/share/poppler). The installer WARNS
+#     (does not fail) if a linked dylib or the poppler data dir is missing.
+#   - From the brew tap: dylibs are BUNDLED into the prefix's lib/ via
+#     @executable_path/../lib, so no /opt/homebrew/* dylibs are required;
+#     only the poppler data dir matters (CJK/CID PDFs).
+#
+# The destination layout contract (bin/pdf2htmlEX + share/pdf2htmlEX) is
+# unchanged; the brew path additionally populates lib/ (additive, ignored
+# by the build-tree binary which uses absolute paths).
 #
 # Usage:
 #   scripts/install-native-pdf2htmlex.sh
@@ -50,8 +68,11 @@ INSTALL_TREE="$BUILD_TREE/native/build/install"
 NATIVE_BIN_FALLBACK="$BUILD_TREE/native/pdf2htmlEX"
 BUILD_SCRIPT="$BUILD_TREE/native/build.sh"
 
+BREW_FORMULA="andersbekkevard/tools/pdf2htmlex"
+
 DEST="$HOME/.local/opt/pdf2htmlEX"
 DEST_BIN="$DEST/bin/pdf2htmlEX"
+DEST_LIB="$DEST/lib"
 DEST_SHARE="$DEST/share/pdf2htmlEX"
 
 POPPLER_DATA_DIR="/opt/homebrew/share/poppler"
@@ -61,36 +82,73 @@ say()  { printf '%s\n' "$*"; }
 warn() { printf 'warning: %s\n' "$*" >&2; }
 die()  { printf 'error: %s\n' "$*" >&2; exit 1; }
 
-# --- 1. Locate build artifacts -----------------------------------------------
+# --- 1. Locate source artifacts ----------------------------------------------
+#
+# SRC_LIB is set only for the brew bundle (relocatable, dylibs in lib/);
+# the build-tree binary leaves it empty (absolute /opt/homebrew links).
+SRC_BIN=""
+SRC_SHARE=""
+SRC_LIB=""
+SRC_DESC=""
 
-[ -d "$BUILD_TREE" ] || die "build tree not found: $BUILD_TREE
-  Set PDF2HTMLEX_BUILD_TREE or build it first: $BUILD_SCRIPT"
-
-# Prefer the cmake install-tree binary; fall back to native/pdf2htmlEX.
-if [ -x "$INSTALL_TREE/bin/pdf2htmlEX" ]; then
-    SRC_BIN="$INSTALL_TREE/bin/pdf2htmlEX"
-elif [ -x "$NATIVE_BIN_FALLBACK" ]; then
-    SRC_BIN="$NATIVE_BIN_FALLBACK"
-else
-    die "no built pdf2htmlEX binary found.
-  Looked for:
-    $INSTALL_TREE/bin/pdf2htmlEX
-    $NATIVE_BIN_FALLBACK
-  Build it first: $BUILD_SCRIPT"
+if [ -d "$BUILD_TREE" ]; then
+    # Prefer the cmake install-tree binary; fall back to native/pdf2htmlEX.
+    if [ -x "$INSTALL_TREE/bin/pdf2htmlEX" ]; then
+        SRC_BIN="$INSTALL_TREE/bin/pdf2htmlEX"
+    elif [ -x "$NATIVE_BIN_FALLBACK" ]; then
+        SRC_BIN="$NATIVE_BIN_FALLBACK"
+    fi
+    if [ -n "$SRC_BIN" ] && [ -f "$INSTALL_TREE/share/pdf2htmlEX/manifest" ]; then
+        SRC_SHARE="$INSTALL_TREE/share/pdf2htmlEX"
+        SRC_DESC="local build tree ($BUILD_TREE)"
+    else
+        SRC_BIN=""
+    fi
 fi
 
-SRC_SHARE="$INSTALL_TREE/share/pdf2htmlEX"
-[ -d "$SRC_SHARE" ] || die "share data not found: $SRC_SHARE
-  Build it first: $BUILD_SCRIPT"
+# Fallback: the brew tap keg. Layout is libexec/{bin,lib,share}.
+if [ -z "$SRC_BIN" ] && command -v brew >/dev/null 2>&1; then
+    BREW_PREFIX="$(brew --prefix "$BREW_FORMULA" 2>/dev/null || true)"
+    if [ -n "$BREW_PREFIX" ] && [ -x "$BREW_PREFIX/libexec/bin/pdf2htmlEX" ]; then
+        SRC_BIN="$BREW_PREFIX/libexec/bin/pdf2htmlEX"
+        SRC_SHARE="$BREW_PREFIX/libexec/share/pdf2htmlEX"
+        SRC_LIB="$BREW_PREFIX/libexec/lib"
+        SRC_DESC="brew keg ($BREW_PREFIX)"
+    fi
+fi
+
+if [ -z "$SRC_BIN" ]; then
+    die "no pdf2htmlEX source found. Tried:
+    local build tree: $INSTALL_TREE/bin/pdf2htmlEX
+                      $NATIVE_BIN_FALLBACK
+    brew keg:         \$(brew --prefix $BREW_FORMULA)/libexec/bin/pdf2htmlEX
+  Build it (native/build.sh) or install the tap:
+    brew tap andersbekkevard/tools && brew install $BREW_FORMULA"
+fi
+
+[ -d "$SRC_SHARE" ] || die "share data not found: $SRC_SHARE"
 [ -f "$SRC_SHARE/manifest" ] || die "share data looks incomplete (no manifest): $SRC_SHARE"
 
-say "Build tree:    $BUILD_TREE"
+say "Source:        $SRC_DESC"
 say "Source binary: $SRC_BIN"
 say "Source share:  $SRC_SHARE"
+[ -n "$SRC_LIB" ] && say "Source lib:    $SRC_LIB (bundled relocatable dylibs)"
 
 # --- 2. Copy into the stable prefix ------------------------------------------
 
 mkdir -p "$DEST/bin" "$DEST/share"
+
+# Bundled libs first (brew source only): the binary's @executable_path/../lib
+# install names require lib/ to sit beside bin/ in DEST.
+if [ -n "$SRC_LIB" ] && [ -d "$SRC_LIB" ]; then
+    rm -rf "$DEST_LIB"
+    cp -R "$SRC_LIB" "$DEST_LIB"
+    say "Installed lib:    $DEST_LIB"
+else
+    # Build-tree binary uses absolute paths; drop any stale bundled lib/ so
+    # the prefix matches the active source exactly.
+    rm -rf "$DEST_LIB"
+fi
 
 # Idempotent: overwrite binary and replace share tree wholesale.
 cp -f "$SRC_BIN" "$DEST_BIN"

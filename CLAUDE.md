@@ -71,6 +71,7 @@ Those entrypoints are deliberately trivial `nohup` forks into
 - Prod (launchd): `launchctl kickstart -k gui/$UID/com.anders.pdf_viewer`
 
 ### Logs & debugging
+- Full-chain diagnosis (read-only): `scripts/doctor.sh` — one PASS/FAIL/WARN line per link (daemon, _assets symlink, native binary + dylibs, cache writability) with fix hints; exits non-zero iff a required check fails.
 - Live tail: `tail -f ~/.cache/pdf_viewer/log`
 - Daemon health: `curl localhost:7435/healthz`
 - Grep cache index: `rg <query> ~/.cache/pdf_viewer/mappings.tsv`

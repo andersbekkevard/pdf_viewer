@@ -211,6 +211,16 @@ if [[ "$MODE" == "reconvert" ]]; then
                 else
                     log "reconvert [$idx/$total] light skipped pending search/selection/resolution fixes"
                 fi
+                # Conversion provenance — pipeline-owned. The dir was wiped
+                # above, so this creates a fresh provenance-only meta.json;
+                # --mode=meta (or the next live convert) will merge pdfinfo
+                # fields in alongside it. Versions parsed from the binary so
+                # this stays accurate across toolchain upgrades.
+                python3 "$REPO_DIR/scripts/write-provenance.py" "$out_dir/meta.json" \
+                    --converter native-arm64 --bin "$NATIVE_BIN" \
+                    --overlay-version "$OVERLAY_VERSION" \
+                    >>"$LOG_FILE" 2>&1 \
+                    || log "reconvert [$idx/$total] provenance write FAILED: $out_dir"
                 ok=$((ok + 1))
             else
                 log "reconvert [$idx/$total] inject FAILED: $out_dir/$out_name"

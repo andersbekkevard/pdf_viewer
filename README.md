@@ -167,6 +167,11 @@ pdf_viewer/
 Everything the repo **does not** contain but depends on. All of it is
 wired once and then forgotten.
 
+The Homebrew runtime formulas these externalities rely on (the dylibs
+the native pdf2htmlEX binary links, `poppler`'s `pdftocairo`/`pdfinfo`,
+and `uv`) are declared in [`Brewfile`](Brewfile); verify a machine has
+them with `brew bundle check --file=Brewfile`.
+
 ### 1. Raycast wrappers (`raycast/`)
 
 The user-facing entrypoints live **inside** this repo at `raycast/`.
@@ -295,7 +300,8 @@ deliberately *don't* bind): [`docs/keybindings.md`](docs/keybindings.md).
 
 No automated tests. Verify by running the Raycast shortcut on a local PDF
 and inspecting behavior in Comet. Logs at `~/.cache/pdf_viewer/log` —
-`tail -f` to watch live.
+`tail -f` to watch live. When something's off, run `scripts/doctor.sh` for a
+read-only PASS/FAIL diagnosis of the whole chain (daemon, symlink, toolchain).
 
 **Overlay-only changes** (most common): edit `assets/overlay.{js,css}`,
 ⌘⇧R in an already-open converted tab. Symlink-served, no reconversion.

@@ -40,4 +40,7 @@ pdfinfo -enc UTF-8 "$PDF" > "$RAW" 2>/dev/null || {
     exit 1
 }
 
-python3 "$PARSER" "$RAW" > "$OUT"
+# Pass $OUT as a merge target (not a stdout redirect) so an existing
+# meta.json's pipeline-written "provenance" object survives. extract-meta.py
+# refreshes only the pdfinfo-owned keys and leaves provenance untouched.
+python3 "$PARSER" "$RAW" "$OUT"
