@@ -14,6 +14,31 @@ registry), [`docs/adr/`](docs/adr/) (architectural decisions),
 Beads), [`docs/verification.md`](docs/verification.md) (verification
 loops), [`CLAUDE.md`](CLAUDE.md) (build / debug / gotchas).
 
+## Quick start
+
+```bash
+git clone <repo> pdf_viewer && cd pdf_viewer
+./scripts/setup.sh
+```
+
+`scripts/setup.sh` is the idempotent bootstrap — safe to re-run. It
+installs the Homebrew runtime deps ([`Brewfile`](Brewfile)), checks for
+`uv`, installs the native pdf2htmlEX toolchain, templates and loads the
+launchd daemon job, creates the cache dir + `_assets` symlink, and ends
+by running [`scripts/doctor.sh`](scripts/doctor.sh) as the success gate.
+It needs Homebrew already present and does **not** auto-install `uv`
+(it prints the one-liner if missing).
+
+Two manual steps it can't script (it prints both on success):
+
+1. **Comet extension** — `comet://extensions` → enable Developer mode →
+   *Load unpacked* → point at `extension/`.
+2. **Raycast script directory** — Raycast → Settings → Extensions →
+   Script Commands → *Add script directory* → pick `raycast/`.
+
+(Optional, for the keyboard workflow: add `localhost:7435` to Vimium's
+pass-through keys — see [Externalities](#externalities) §5.)
+
 ## Why
 
 Vimium — the vim-style keyboard navigation we rely on for everything —
@@ -211,12 +236,13 @@ progress.
 
 ### 2. LaunchAgent (`~/Library/LaunchAgents/com.anders.pdf_viewer.plist`)
 
-**Symlinked** into `LaunchAgents/` from `launchd/com.anders.pdf_viewer.plist`
-so repo edits propagate on the next
-`launchctl kickstart -k gui/$UID/com.anders.pdf_viewer`. User-level
-agent, no sudo. `RunAtLoad=true`, `KeepAlive=true`,
-`ThrottleInterval=5`. Install/uninstall commands live as comments at
-the top of the plist.
+Generated into `LaunchAgents/` by `scripts/setup.sh`, which templates
+`launchd/com.anders.pdf_viewer.plist` (the repo copy hardcodes absolute
+paths) with the live `$HOME` and repo dir before loading it. Re-running
+setup only reloads the job if the templated content changed, so a
+healthy daemon is left untouched. User-level agent, no sudo.
+`RunAtLoad=true`, `KeepAlive=true`, `ThrottleInterval=5`.
+Install/uninstall commands live as comments at the top of the plist.
 
 ### 3. Comet extension (loaded from `extension/`)
 
