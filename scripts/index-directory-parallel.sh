@@ -4,8 +4,8 @@
 # pdf_viewer — parallel bulk directory indexer.
 #
 # Usage: index-directory-parallel.sh <folder> [jobs]
-#   jobs: number of concurrent conversions (default 4). Each worker spawns
-#         its own docker container running pdf2htmlEX.
+#   jobs: number of concurrent conversions (default 2). Each worker invokes
+#         the native pdf2htmlEX binary directly.
 #
 # Same contract as scripts/index-directory.sh (idempotent, content-hash cache),
 # but runs conversions concurrently via xargs -P.
@@ -18,7 +18,15 @@
 #   - Mapping-file rewrites are serialized via an mkdir-based mutex.
 #   - Stale `.converting` dirs from killed runs are purged at startup.
 #
-# Requires Docker running (see ADR 0004). Fails fast otherwise.
+# Job-count default: the old Docker default was 4 because each conversion ran
+# single-threaded inside its container, so saturating cores meant many
+# containers. The native arm64 binary parallelizes internally (~6 threads per
+# conversion), so the old 4 would oversubscribe badly. Default 2 keeps total
+# in-flight threads (~2×6) near a typical Apple Silicon core count while still
+# overlapping I/O-bound phases (hashing, injection, meta) across workers.
+#
+# Requires the native pdf2htmlEX binary (install-native-pdf2htmlex.sh).
+# Fails fast otherwise.
 # ============================================================================
 
 set -u
@@ -29,7 +37,7 @@ set -u
 notify() { osascript -e "display notification \"$1\" with title \"pdf_viewer\"" >/dev/null 2>&1; }
 
 DIR_ARG="${1:-}"
-JOBS="${2:-4}"
+JOBS="${2:-2}"
 
 if [[ -z "$DIR_ARG" ]]; then
     notify "No folder argument given"
@@ -56,11 +64,20 @@ LOG_FILE="$CACHE_DIR/log"
 MAP_FILE="$CACHE_DIR/mappings.tsv"
 MAP_LOCK="$CACHE_DIR/.maplock"
 ASSET_LINK="$CACHE_DIR/_assets"
-IMAGE="pdf2htmlex/pdf2htmlex:0.18.8.rc2-master-20200820-ubuntu-20.04-x86_64"
+# Native arm64 pdf2htmlEX (replaces the old amd64 Docker image). --data-dir
+# is passed explicitly on every invocation; the binary's baked default is
+# fragile.
+NATIVE_BIN="$HOME/.local/opt/pdf2htmlEX/bin/pdf2htmlEX"
+NATIVE_DATA_DIR="$HOME/.local/opt/pdf2htmlEX/share/pdf2htmlEX"
+# Baked poppler-data default is a version-pinned Cellar path that breaks on
+# brew upgrade; pass the stable symlink explicitly (needed for CJK/CID PDFs).
+NATIVE_POPPLER_DATA="/opt/homebrew/share/poppler"
 OVERLAY_VERSION=25
 INJECTOR="$REPO_DIR/scripts/inject-overlay.py"
+EXTERNALIZER="$REPO_DIR/scripts/externalize-page-images.py"
+LIGHT_VARIANTS_ENABLED="${PDF_VIEWER_ENABLE_EXPERIMENTAL_LIGHT:-0}"
 
-export REPO_DIR CACHE_DIR LOG_FILE MAP_FILE MAP_LOCK ASSET_LINK IMAGE OVERLAY_VERSION INJECTOR
+export REPO_DIR CACHE_DIR LOG_FILE MAP_FILE MAP_LOCK ASSET_LINK NATIVE_BIN NATIVE_DATA_DIR NATIVE_POPPLER_DATA OVERLAY_VERSION INJECTOR EXTERNALIZER LIGHT_VARIANTS_ENABLED
 
 mkdir -p "$CACHE_DIR"
 
@@ -78,9 +95,9 @@ fi
 FD=$(command -v fd || command -v fdfind || true)
 [[ -n "$FD" ]] || die "fd not found — install via 'brew install fd'"
 
-if ! docker info >/dev/null 2>&1; then
-    notify "Docker daemon not running"
-    die "Docker daemon not running — start Docker.app"
+if [[ ! -x "$NATIVE_BIN" ]]; then
+    notify "native pdf2htmlEX not installed"
+    die "native pdf2htmlEX not installed — run scripts/install-native-pdf2htmlex.sh"
 fi
 
 # Purge stale .converting claim dirs left behind by killed runs (>30 min old).
@@ -92,17 +109,16 @@ rmdir "$MAP_LOCK" 2>/dev/null  # clear stale map lock too
 # ---------------------------------------------------------------------------
 worker() {
     local pdf="$1"
-    local pdf_name pdf_dir hash out_dir existing_html out_name rc
+    local pdf_name hash out_dir existing_html out_name rc
 
     [[ -f "$pdf" ]] || { log "[miss] $pdf"; return 0; }
 
     pdf_name=$(basename "$pdf")
-    pdf_dir=$(dirname "$pdf")
     hash=$(shasum -a 256 "$pdf" | awk '{print $1}' | head -c 16)
     out_dir="$CACHE_DIR/$hash"
     mkdir -p "$out_dir"
 
-    existing_html=$(ls "$out_dir"/*.html 2>/dev/null | head -1)
+    existing_html=$(find "$out_dir" -maxdepth 1 -type f -name '*.html' ! -name '*.light.html' | sort | head -1)
 
     if [[ -z "$existing_html" ]]; then
         # Attempt atomic claim on this hash. If another worker already owns
@@ -111,18 +127,29 @@ worker() {
             out_name="${pdf_name%.*}.html"
             log "[convert] $pdf"
 
-            if docker run --rm --platform linux/amd64 \
-                    -e LC_ALL=C.UTF-8 -e LANG=C.UTF-8 \
-                    -v "$pdf_dir":/pdf:ro \
-                    -v "$out_dir":/out \
-                    -w /pdf \
-                    "$IMAGE" \
-                    --dest-dir /out \
-                    "$pdf_name" \
-                    > >(grep -v 'perl: warning\|Setting locale failed' >>"$LOG_FILE") \
-                    2> >(grep -v 'perl: warning\|Setting locale failed' >>"$LOG_FILE"); then
-                if python3 "$INJECTOR" "$out_dir/$out_name" "${pdf_name%.*}" \
+            if "$NATIVE_BIN" --data-dir "$NATIVE_DATA_DIR" \
+                    --poppler-data-dir "$NATIVE_POPPLER_DATA" --dest-dir "$out_dir" \
+                    "$pdf" >>"$LOG_FILE" 2>&1; then
+                if uv run "$INJECTOR" "$out_dir/$out_name" "${pdf_name%.*}" \
                         "$OVERLAY_VERSION" >>"$LOG_FILE" 2>&1; then
+                    if [[ "$LIGHT_VARIANTS_ENABLED" == "1" ]]; then
+                        local light_out_name="${out_name%.html}.light.html"
+                        if uv run "$EXTERNALIZER" \
+                                "$out_dir/$out_name" "$out_dir/$light_out_name" \
+                                --image-dir "$out_dir/page-images" \
+                                --url-prefix "/$hash/page-images/" \
+                                --eager 2 \
+                                --clean >>"$LOG_FILE" 2>&1; then
+                            uv run "$INJECTOR" "$out_dir/$light_out_name" "${pdf_name%.*}" \
+                                "$OVERLAY_VERSION" >>"$LOG_FILE" 2>&1 \
+                                || log "[fail-light-inject] $pdf"
+                        else
+                            log "[fail-light] $pdf"
+                            rm -f "$out_dir/$light_out_name"
+                        fi
+                    else
+                        log "[skip-light-disabled] $pdf"
+                    fi
                     rc=0
                 else
                     log "[fail-inject] $pdf"
@@ -142,7 +169,7 @@ worker() {
                 sleep 0.2
                 waited=$((waited + 1))
             done
-            existing_html=$(ls "$out_dir"/*.html 2>/dev/null | head -1)
+            existing_html=$(find "$out_dir" -maxdepth 1 -type f -name '*.html' ! -name '*.light.html' | sort | head -1)
             if [[ -z "$existing_html" ]]; then
                 log "[fail-peer] $pdf (peer worker did not complete)"
                 return 1
@@ -168,7 +195,7 @@ worker() {
     done
     {
         local final_html
-        final_html=$(ls "$out_dir"/*.html 2>/dev/null | head -1)
+        final_html=$(find "$out_dir" -maxdepth 1 -type f -name '*.html' ! -name '*.light.html' | sort | head -1)
         if [[ -n "$final_html" ]]; then
             if [[ -f "$MAP_FILE" ]]; then
                 awk -F'\t' -v h="$hash" '$3 != h' "$MAP_FILE"

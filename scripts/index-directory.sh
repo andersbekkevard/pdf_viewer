@@ -13,7 +13,8 @@
 #   raycast/pdf-viewer-index-folder.sh
 # which also takes the folder path as a Raycast argument.
 #
-# Requires Docker running (see ADR 0004). Fails fast otherwise.
+# Requires the native pdf2htmlEX binary (install-native-pdf2htmlex.sh).
+# Fails fast otherwise.
 # ============================================================================
 
 set -u
@@ -46,9 +47,18 @@ CACHE_DIR="$HOME/.cache/pdf_viewer"
 LOG_FILE="$CACHE_DIR/log"
 MAP_FILE="$CACHE_DIR/mappings.tsv"
 ASSET_LINK="$CACHE_DIR/_assets"
-IMAGE="pdf2htmlex/pdf2htmlex:0.18.8.rc2-master-20200820-ubuntu-20.04-x86_64"
+# Native arm64 pdf2htmlEX (replaces the old amd64 Docker image). --data-dir
+# is passed explicitly on every invocation; the binary's baked default is
+# fragile.
+NATIVE_BIN="$HOME/.local/opt/pdf2htmlEX/bin/pdf2htmlEX"
+NATIVE_DATA_DIR="$HOME/.local/opt/pdf2htmlEX/share/pdf2htmlEX"
+# Baked poppler-data default is a version-pinned Cellar path that breaks on
+# brew upgrade; pass the stable symlink explicitly (needed for CJK/CID PDFs).
+NATIVE_POPPLER_DATA="/opt/homebrew/share/poppler"
 OVERLAY_VERSION=25
 INJECTOR="$REPO_DIR/scripts/inject-overlay.py"
+EXTERNALIZER="$REPO_DIR/scripts/externalize-page-images.py"
+LIGHT_VARIANTS_ENABLED="${PDF_VIEWER_ENABLE_EXPERIMENTAL_LIGHT:-0}"
 
 mkdir -p "$CACHE_DIR"
 
@@ -65,9 +75,9 @@ fi
 FD=$(command -v fd || command -v fdfind || true)
 [[ -n "$FD" ]] || die "fd not found — install via 'brew install fd'"
 
-if ! docker info >/dev/null 2>&1; then
-    notify "Docker daemon not running"
-    die "Docker daemon not running — start Docker.app"
+if [[ ! -x "$NATIVE_BIN" ]]; then
+    notify "native pdf2htmlEX not installed"
+    die "native pdf2htmlEX not installed — run scripts/install-native-pdf2htmlex.sh"
 fi
 
 # Discover PDFs. macOS ships bash 3.2 (no mapfile), so read-into-array by hand.
@@ -92,7 +102,6 @@ for idx in "${!PDFS[@]}"; do
     pdf="${PDFS[$idx]}"
     n=$((idx + 1))
     pdf_name=$(basename "$pdf")
-    pdf_dir=$(dirname "$pdf")
 
     # Content hash = stable across moves/renames
     hash=$(shasum -a 256 "$pdf" | awk '{print $1}' | head -c 16)
@@ -102,7 +111,7 @@ for idx in "${!PDFS[@]}"; do
     # Cache hit if *any* html exists in this hash dir — two PDFs that share
     # content (e.g. the same textbook under different filenames) collide on
     # hash and point at the same converted bundle.
-    existing_html=$(ls "$out_dir"/*.html 2>/dev/null | head -1)
+    existing_html=$(find "$out_dir" -maxdepth 1 -type f -name '*.html' ! -name '*.light.html' | sort | head -1)
     if [[ -n "$existing_html" ]]; then
         out_name=$(basename "$existing_html")
         log "[${n}/${total}] skip cached: $pdf -> $out_name"
@@ -110,25 +119,36 @@ for idx in "${!PDFS[@]}"; do
     else
         out_name="${pdf_name%.*}.html"
         say "[${n}/${total}] convert: $pdf"
-        if ! docker run --rm --platform linux/amd64 \
-                -e LC_ALL=C.UTF-8 -e LANG=C.UTF-8 \
-                -v "$pdf_dir":/pdf:ro \
-                -v "$out_dir":/out \
-                -w /pdf \
-                "$IMAGE" \
-                --dest-dir /out \
-                "$pdf_name" \
-                > >(grep -v 'perl: warning\|Setting locale failed' >>"$LOG_FILE") \
-                2> >(grep -v 'perl: warning\|Setting locale failed' >>"$LOG_FILE"); then
+        if ! "$NATIVE_BIN" --data-dir "$NATIVE_DATA_DIR" \
+                --poppler-data-dir "$NATIVE_POPPLER_DATA" --dest-dir "$out_dir" \
+                "$pdf" >>"$LOG_FILE" 2>&1; then
             log "[${n}/${total}] pdf2htmlEX FAILED: $pdf"
             failed=$((failed + 1))
             continue
         fi
-        if ! python3 "$INJECTOR" "$out_dir/$out_name" "${pdf_name%.*}" \
+        if ! uv run "$INJECTOR" "$out_dir/$out_name" "${pdf_name%.*}" \
                 "$OVERLAY_VERSION" >>"$LOG_FILE" 2>&1; then
             log "[${n}/${total}] inject FAILED: $pdf"
             failed=$((failed + 1))
             continue
+        fi
+        if [[ "$LIGHT_VARIANTS_ENABLED" == "1" ]]; then
+            light_out_name="${out_name%.html}.light.html"
+            if uv run "$EXTERNALIZER" \
+                    "$out_dir/$out_name" "$out_dir/$light_out_name" \
+                    --image-dir "$out_dir/page-images" \
+                    --url-prefix "/$hash/page-images/" \
+                    --eager 2 \
+                    --clean >>"$LOG_FILE" 2>&1; then
+                uv run "$INJECTOR" "$out_dir/$light_out_name" "${pdf_name%.*}" \
+                    "$OVERLAY_VERSION" >>"$LOG_FILE" 2>&1 \
+                    || log "[${n}/${total}] light inject failed: $pdf"
+            else
+                log "[${n}/${total}] light variant failed: $pdf"
+                rm -f "$out_dir/$light_out_name"
+            fi
+        else
+            log "[${n}/${total}] light variant skipped pending search/selection/resolution fixes: $pdf"
         fi
         converted=$((converted + 1))
     fi

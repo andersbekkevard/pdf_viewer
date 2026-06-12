@@ -18,18 +18,10 @@
 # the background and exit immediately — Raycast renders the wrapper's
 # stdout as a HUD toast the instant that happens. The real script is
 # on its own from there (macOS notifications cover mid-run progress).
-
-# Preflight: Docker must be running for a cache-miss conversion. Done
-# synchronously in the wrapper so the failure surfaces via Raycast's HUD
-# (the only reliable visual channel — macOS `osascript display notification`
-# requires Script Editor to have notification permission, which many setups
-# don't). The socket check is instant and matches how Docker Desktop itself
-# signals its state: the socket is created on start, removed on stop.
-# The underlying script re-runs `docker info` for defense-in-depth.
-if [[ ! -S /var/run/docker.sock ]]; then
-    echo "⚠️ Docker not running — start Docker.app"
-    exit 1
-fi
+#
+# Conversion now uses a native arm64 pdf2htmlEX binary (no Docker). The
+# underlying script fails fast with an install hint if the binary is missing,
+# surfaced via macOS notification.
 
 nohup /Users/andersbekkevard/dev/misc/pdf_viewer/scripts/pdf2html-convert.sh "$@" \
     >>"$HOME/.cache/pdf_viewer/log" 2>&1 &

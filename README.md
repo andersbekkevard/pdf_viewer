@@ -29,13 +29,15 @@ position restore, …).
 
 ## Design philosophy
 
-1. **Cache is load-bearing.** Conversion is slow (Docker + pdf2htmlEX on
-   Rosetta-emulated amd64, 1–2 min for a textbook). Convert once, cache
-   forever at `~/.cache/pdf_viewer/<hash>/`. Every subsequent open is a
-   disk read — 1–3 ms.
-2. **Docker on demand.** Docker is the only heavy component. It sits off
-   23 h a day. The user starts it manually before the rare "convert a
-   batch" session. The daemon never touches Docker (ADR 0004).
+1. **Cache is load-bearing.** Conversion is slow (pdf2htmlEX, up to
+   1–2 min for a textbook). Convert once, cache forever at
+   `~/.cache/pdf_viewer/<hash>/`. Every subsequent open is a disk read —
+   1–3 ms.
+2. **Native conversion, no Docker.** Conversion runs a natively-built
+   arm64 pdf2htmlEX binary (`~/.local/opt/pdf2htmlEX/`, installed by
+   `scripts/install-native-pdf2htmlex.sh`). Docker is no longer needed
+   for conversion at all. The daemon never invokes the converter
+   (ADR 0004, ADR 0011).
 3. **Read-only daemon, scary work in Raycast.** FastAPI daemon serves the
    cache and nothing else. All conversion / indexing lives in Raycast
    scripts. If the daemon crashes, no documents are lost; if a script
@@ -65,16 +67,21 @@ All core phases done (1 → 7). What works end-to-end today:
   URL path.
 - **Overlay injection** — `scripts/inject-overlay.py`, shared between
   fresh conversions and bulk upgrades. Idempotent.
-- **Bulk upgrade** — `scripts/upgrade-cache.sh --mode={inject,reconvert}`.
+- **Bulk upgrade** — `scripts/upgrade-cache.sh --mode={inject,reconvert,light}`.
   `inject` re-applies the overlay to every cached HTML (seconds, no
-  Docker). `reconvert` re-runs pdf2htmlEX; for https entries reuses the
+  reconversion). `reconvert` re-runs pdf2htmlEX; for https entries reuses the
   stored `_source/*.pdf` so signed URLs don't need to be refetched.
+  `light` builds derived low-memory HTML from existing canonical HTML, but is
+  guarded behind `PDF_VIEWER_ENABLE_EXPERIMENTAL_LIGHT=1` until the open
+  resolution/search/selection bugs are fixed.
 - **Bulk indexing** — `scripts/index-directory.sh <folder>` recursively
   content-hashes every PDF and converts uncached ones. Raycast wrapper
   takes a folder argument.
 - **FastAPI daemon** (`daemon/main.py`, uv project) — read-only. Routes:
   `GET /view?path=` / `GET /view?url=` / `GET /view-raw?<url>` /
-  `GET /<hash>/<file>` / `GET /_assets/*` / `GET /healthz` / `GET /stats` /
+  `GET /view-light?path=` / `GET /view-light?url=` /
+  `GET /view-light-raw?<url>` / `GET /<hash>/<file>` /
+  `GET /_assets/*` / `GET /healthz` / `GET /stats` /
   `GET /stats/recent` / `GET /library`. Cache lookup ≈ 1–3 ms.
 - **launchd autostart** — `launchd/com.anders.pdf_viewer.plist` symlinked
   into `~/Library/LaunchAgents/`. `KeepAlive=true`, respawns within a
@@ -83,7 +90,15 @@ All core phases done (1 → 7). What works end-to-end today:
   `declarativeNetRequest` rules redirect `^https?://.*\.pdf(\?.*)?$`
   main-frame navigations to the daemon. Loop-prevention via a
   `_pdfvw=passthrough` marker that the daemon appends to its 307 on
-  miss.
+  miss. The toolbar action toggles the current cached PDF between the
+  custom viewer and the native browser PDF viewer; disabled entries install
+  higher-priority allow rules instead of redirect rules.
+- **Experimental low-memory light HTML** — canonical `<stem>.html` stays in the cache as
+  the exact pdf2htmlEX output and rollback path. Normal opens prefer
+  `<stem>.light.html`, which externalizes page rasters, mounts only nearby
+  page images, and collapses the glyph-heavy text layer to one searchable
+  DOM text node per page. Generation is disabled by default until the
+  quality follow-up is fixed.
 - **Visit tracking** (`daemon/visits.py` + `visits.db`) — every cache hit
   logged off the response path via FastAPI `BackgroundTasks`. Powers
   `/stats`, `/stats/recent`, and the visits-sorted library picker
@@ -91,8 +106,9 @@ All core phases done (1 → 7). What works end-to-end today:
 - **Native `⌘F` full-document indexing** — `.pf` carries
   `content-visibility: auto` so off-viewport pages skip paint+layout
   but their text stays in the layout tree, where Chromium's native
-  find indexes it. No surrogate text layer; matches scroll to the real
-  line with the standard yellow highlight. See ADR 0009. Overlay `/`
+  find indexes it. In canonical HTML, matches scroll to the exact text line.
+  In light HTML, matches scroll to the owning page text node while the page
+  raster remains the visual source. See ADR 0009 and ADR 0010. Overlay `/`
   search remains visible-page scoped.
 
 What's not built: cross-device access over Tailscale (phase 8, optional).
@@ -101,12 +117,17 @@ What's not built: cross-device access over Tailscale (phase 8, optional).
 
 - **Cached doc, anywhere on the web** — click the link, land in the HTML
   viewer. No thought.
+- **Bad rendering / want native for this doc** — run `:disable` (alias
+  `:native`) in the viewer. The daemon records that cache hash as disabled
+  and opens the native PDF route without deleting the cache entry. Click the
+  extension toolbar button while the PDF is native to re-enable the custom
+  viewer for that same document.
 - **Uncached doc** — click the link, native viewer opens (degraded but
-  readable). If you want it in HTML, run Raycast-convert once. Docker
-  must be running. Next click forever hits cache.
+  readable). If you want it in HTML, run Raycast-convert once. Next click
+  forever hits cache.
 - **Whole textbook directory** — run Raycast-index-directory against the
-  folder. Docker must be running. Idempotent; re-running skips
-  already-cached PDFs (content-hash dedup handles renames).
+  folder. Idempotent; re-running skips already-cached PDFs (content-hash
+  dedup handles renames).
 
 ## Components
 
@@ -117,6 +138,8 @@ pdf_viewer/
 │   ├── pdf2html-convert.sh      # convert: single PDF (file or url)
 │   ├── index-directory.sh       # index: recursive directory walk
 │   ├── upgrade-cache.sh         # bulk re-inject / re-convert
+│   ├── externalize-page-images.py
+│   │                            # build low-memory .light.html variants
 │   └── inject-overlay.py        # idempotent overlay injector
 ├── raycast/                     # Raycast-format wrappers (point Raycast here)
 │   ├── pdf-viewer-convert.sh
@@ -212,12 +235,16 @@ Add `localhost:7435` to Vimium's "Keys to pass through" with the keys
 `? s / n N h l e q E c C <c-f> 0 1 2 3 4 5 6 7 8 9`, otherwise Vimium swallows them before the overlay's
 handlers see them. One-time setup in the Vimium options page.
 
-### 6. Docker Desktop
+### 6. Native pdf2htmlEX toolchain
 
-Required **only** when converting — the daemon never touches it
-(ADR 0004). `scripts/pdf2html-convert.sh` and `scripts/index-directory.sh`
-fail fast with a clear "Docker daemon not running" message if the user
-forgets. Do not auto-start Docker from any script.
+Conversion needs a natively-built arm64 pdf2htmlEX at
+`~/.local/opt/pdf2htmlEX/`, installed (copy-only) by
+`scripts/install-native-pdf2htmlex.sh` from the v2 build tree at
+`~/dev/external/pdf2htmlEX_v2/`. The binary links Homebrew dylibs and
+needs `/opt/homebrew/share/poppler` at runtime — these are not bundled.
+`scripts/pdf2html-convert.sh` and `scripts/index-directory.sh` fail fast
+with "native pdf2htmlEX not installed" if the binary is missing.
+**Docker is no longer needed for conversion** (ADR 0011).
 
 ### Network
 
@@ -296,5 +323,6 @@ bust the `<script src=…?v=N>` query-string cache.
   of converted HTML
 - [`docs/adr/`](docs/adr/) — architectural decisions: engine choice
   (0001), render-window + cursor pin (0002), keyboard strategy under
-  Vimium (0003), docker-on-demand + daemon split (0004), Vimium scroll
+  Vimium (0003), on-demand-compute + daemon split (0004; Docker-compute
+  half superseded by native pdf2htmlEX, 0011), Vimium scroll
   scoping (0005), scrolloff (0006)

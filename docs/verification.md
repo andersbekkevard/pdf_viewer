@@ -86,8 +86,9 @@ Use the smallest proof that exercises the changed behavior:
   the daemon logs. A browser check is still needed if the route changes user
   navigation.
 - **Conversion/injection behavior**: use a small local PDF fixture or a known
-  cached PDF. If conversion itself is exercised, Docker must already be running;
-  scripts must not auto-start Docker.
+  cached PDF. If conversion itself is exercised, the native pdf2htmlEX binary
+  must already be installed (`scripts/install-native-pdf2htmlex.sh`, ADR 0011);
+  scripts must not auto-install or auto-build it.
 - **Extension redirect behavior**: verify in Comet with the unpacked extension
   loaded. Check both cache hit and passthrough/cache-miss paths when redirects
   change.

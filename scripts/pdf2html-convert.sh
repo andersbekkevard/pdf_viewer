@@ -25,8 +25,18 @@ CACHE_DIR="$HOME/.cache/pdf_viewer"
 LOG_FILE="$CACHE_DIR/log"
 MAP_FILE="$CACHE_DIR/mappings.tsv"
 ASSET_LINK="$CACHE_DIR/_assets"
-IMAGE="pdf2htmlex/pdf2htmlex:0.18.8.rc2-master-20200820-ubuntu-20.04-x86_64"
+# Native arm64 pdf2htmlEX (replaces the old amd64 Docker image). Installed by
+# scripts/install-native-pdf2htmlex.sh. --data-dir is passed explicitly on
+# every invocation — the binary's baked default lookup is fragile.
+NATIVE_BIN="$HOME/.local/opt/pdf2htmlEX/bin/pdf2htmlEX"
+NATIVE_DATA_DIR="$HOME/.local/opt/pdf2htmlEX/share/pdf2htmlEX"
+# Baked poppler-data default is a version-pinned Cellar path that breaks on
+# brew upgrade; pass the stable symlink explicitly (needed for CJK/CID PDFs).
+NATIVE_POPPLER_DATA="/opt/homebrew/share/poppler"
 OVERLAY_VERSION=25  # bump to bust browser cache of /_assets/overlay.*
+INJECTOR="$REPO_DIR/scripts/inject-overlay.py"
+EXTERNALIZER="$REPO_DIR/scripts/externalize-page-images.py"
+LIGHT_VARIANTS_ENABLED="${PDF_VIEWER_ENABLE_EXPERIMENTAL_LIGHT:-0}"
 
 mkdir -p "$CACHE_DIR"
 # The Raycast wrapper forks us into the background and redirects all stdio
@@ -54,8 +64,8 @@ fail() {
     log "FAIL: $1"
     osascript -e 'do shell script "afplay /System/Library/Sounds/Basso.aiff &"' >/dev/null 2>&1
     # Distinct title so macOS doesn't coalesce with any prior "pdf_viewer"
-    # banner (e.g. the pre-docker-check "Converting…" notification would
-    # otherwise replace this error message silently).
+    # banner (e.g. the "Converting…" notification fired just before the
+    # convert step would otherwise replace this error message silently).
     osascript -e "display notification \"$1\" with title \"pdf_viewer error\"" >/dev/null 2>&1
     exit 1
 }
@@ -168,40 +178,56 @@ else
 fi
 
 # -----------------------------------------------------------------------------
-# Convert if not cached. Docker only consulted here, on actual cache miss.
+# Convert if not cached. Native pdf2htmlEX is only invoked here, on a real
+# cache miss.
 # -----------------------------------------------------------------------------
 if [[ ! -f "$OUT_DIR/$OUT_NAME" ]]; then
-    # Notify BEFORE the docker info check — that check itself takes 500ms-
-    # 2s on a cold daemon, and waiting for it before signaling "we're
-    # working" is exactly what makes the experience feel dead.
     notify "Converting $PDF_NAME" "Cache miss — may take up to ~2 minutes"
-    if ! docker info >/dev/null 2>&1; then
-        fail "Docker daemon not running — start Docker.app"
-    fi
+    [[ -x "$NATIVE_BIN" ]] || \
+        fail "native pdf2htmlEX not installed — run scripts/install-native-pdf2htmlex.sh"
     log "convert start: $SOURCE_REF -> $OUT_DIR/$OUT_NAME"
-    docker run --rm --platform linux/amd64 \
-        -e LC_ALL=C.UTF-8 -e LANG=C.UTF-8 \
-        -v "$PDF_DIR":/pdf:ro \
-        -v "$OUT_DIR":/out \
-        -w /pdf \
-        "$IMAGE" \
-        --dest-dir /out \
-        "$PDF_NAME" \
-        > >(grep -v 'perl: warning\|Setting locale failed' >>"$LOG_FILE") \
-        2> >(grep -v 'perl: warning\|Setting locale failed' >>"$LOG_FILE") \
+    "$NATIVE_BIN" --data-dir "$NATIVE_DATA_DIR" \
+        --poppler-data-dir "$NATIVE_POPPLER_DATA" --dest-dir "$OUT_DIR" \
+        "$PDF_DIR/$PDF_NAME" \
+        >>"$LOG_FILE" 2>&1 \
         || fail "pdf2htmlEX conversion failed (see $LOG_FILE)"
     log "convert done: $OUT_NAME"
 fi
 
 # Inject title, favicon, and overlay <link>/<script> tags (idempotent).
 # Same code also runs from upgrade-cache.sh --mode=inject.
-python3 "$REPO_DIR/scripts/inject-overlay.py" \
+uv run "$INJECTOR" \
     "$OUT_DIR/$OUT_NAME" "${PDF_NAME%.*}" "$OVERLAY_VERSION" \
     || fail "overlay injection failed"
 
 # Note: native browser Cmd-F now indexes the full document via
 # `content-visibility: auto` on `.pf` (overlay.css). No surrogate text layer,
 # no `text.json`. See ADR 0009.
+
+# Derived light variant. Disabled by default while pdfv-yg1.17's follow-up
+# quality bugs are open; opt in with PDF_VIEWER_ENABLE_EXPERIMENTAL_LIGHT=1.
+LIGHT_OUT_NAME="${OUT_NAME%.html}.light.html"
+if [[ "$LIGHT_VARIANTS_ENABLED" == "1" && ( ! -f "$OUT_DIR/$LIGHT_OUT_NAME" || "$OUT_DIR/$OUT_NAME" -nt "$OUT_DIR/$LIGHT_OUT_NAME" ) ]]; then
+    log "light variant start: $OUT_DIR/$LIGHT_OUT_NAME"
+    if uv run "$EXTERNALIZER" \
+            "$OUT_DIR/$OUT_NAME" "$OUT_DIR/$LIGHT_OUT_NAME" \
+            --image-dir "$OUT_DIR/page-images" \
+            --url-prefix "/$HASH/page-images/" \
+            --eager 2 \
+            --clean; then
+        log "light variant done: $LIGHT_OUT_NAME"
+    else
+        log "light variant failed for $OUT_NAME; falling back to canonical"
+        rm -f "$OUT_DIR/$LIGHT_OUT_NAME"
+    fi
+elif [[ "$LIGHT_VARIANTS_ENABLED" != "1" ]]; then
+    log "light variant generation disabled pending search/selection/resolution fixes"
+fi
+if [[ "$LIGHT_VARIANTS_ENABLED" == "1" && -f "$OUT_DIR/$LIGHT_OUT_NAME" ]]; then
+    uv run "$INJECTOR" \
+        "$OUT_DIR/$LIGHT_OUT_NAME" "${PDF_NAME%.*}" "$OVERLAY_VERSION" \
+        || log "light variant overlay injection failed for $LIGHT_OUT_NAME"
+fi
 
 # Verify the daemon is up. launchd owns it (phase 5) — this script must NOT
 # fall back to starting `python3 -m http.server`, because the daemon's GET /
@@ -220,7 +246,11 @@ if [[ "$HEALTHZ_BODY" != *'"status":"ok"'* ]]; then
     fail "daemon unreachable on :${PORT} — check 'launchctl list | grep pdf_viewer'"
 fi
 
-ENCODED_NAME=$(python3 -c "import sys, urllib.parse as u; print(u.quote(sys.argv[1]))" "$OUT_NAME")
+NAV_NAME="$OUT_NAME"
+if [[ "$LIGHT_VARIANTS_ENABLED" == "1" && -f "$OUT_DIR/$LIGHT_OUT_NAME" ]]; then
+    NAV_NAME="$LIGHT_OUT_NAME"
+fi
+ENCODED_NAME=$(python3 -c "import sys, urllib.parse as u; print(u.quote(sys.argv[1]))" "$NAV_NAME")
 URL="http://localhost:${PORT}/${HASH}/${ENCODED_NAME}"
 
 # Upsert pdf→html mapping (dedupe on HASH — works for both file and url)

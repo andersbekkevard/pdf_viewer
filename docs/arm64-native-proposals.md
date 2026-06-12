@@ -1,6 +1,12 @@
 # Native arm64 pdf2htmlEX — proposals
 
-**Status**: Proposed, not chosen
+> **Resolved (2026-06-12): Option 2 shipped — a native darwin-arm64
+> pdf2htmlEX binary, no Docker.** This doc recommended Option 1
+> (arm64 Docker image); the experiment did Option 2 and it worked. See
+> [ADR 0011](adr/0011-native-arm64-pdf2htmlex.md) for the decision and
+> why the recommendation was overridden. Body kept below for history.
+
+**Status**: Resolved — Option 2 shipped (was: Proposed, not chosen)
 **Date**: 2026-04-22
 
 Two candidate paths for getting pdf2htmlEX to run natively on Apple

@@ -23,8 +23,9 @@ Six loosely-coupled parts, each with a narrow job:
   cache dir, so edits reload on ⌘⇧R without reconversion. This is
   where ~90 % of day-to-day work happens.
 - **`scripts/pdf2html-convert.sh`** — single-PDF conversion
-  (`file://` or `https://`). Hashes, downloads if remote, runs Docker
-  pdf2htmlEX, injects the overlay. Invoked from a Raycast wrapper.
+  (`file://` or `https://`). Hashes, downloads if remote, runs the native
+  arm64 pdf2htmlEX binary (no Docker — ADR 0011), injects the overlay.
+  Invoked from a Raycast wrapper.
 - **`scripts/index-directory.sh`** — recursive folder indexer. Content-
   hashes every PDF and skips anything already cached.
 - **`scripts/inject-overlay.py`** — idempotent `<script>`/`<link>`
@@ -144,9 +145,16 @@ explicitly.
   visible?".** Don't cache `offsetTop`/`offsetHeight` — they go stale
   on `⌘+`/`⌘-`. The outline-active tracker is an intentional exception
   (wrong highlight is cosmetic).
-- **Docker daemon is assumed OFF by default.** Scripts that need it
-  fail fast with a clear "Docker daemon not running" error. Do not
-  auto-start Docker from any script — see ADR 0004.
+- **Conversion is a native arm64 pdf2htmlEX binary, not Docker.**
+  Installed at `~/.local/opt/pdf2htmlEX/` by
+  `scripts/install-native-pdf2htmlex.sh` (copy-only from the v2 build
+  tree `~/dev/external/pdf2htmlEX_v2/`). Convert scripts always pass
+  `--data-dir` and `--poppler-data-dir` explicitly (baked defaults are
+  fragile); they fail fast with "native pdf2htmlEX not installed" if the
+  binary is missing. Docker is no longer needed for conversion — see
+  ADR 0011. The binary depends on Homebrew dylibs + `/opt/homebrew/share/poppler`
+  at runtime; if a `brew upgrade` breaks linkage, rebuild in the v2 tree
+  and re-run the installer.
 - **Vimium reserves many keys; never invent a new overlay keybinding
   without checking `docs/keybindings.md`.** When in doubt, add a
   palette command instead.
@@ -176,8 +184,8 @@ explicitly.
 - [`docs/pdf2htmlex-dom.md`](docs/pdf2htmlex-dom.md) — DOM
   conventions of converted HTML. Read before writing any new selector.
 - [`docs/adr/`](docs/adr/) — the "why" behind major architectural
-  choices (engine, render model, keyboard strategy, docker/daemon
-  split, Vimium scroll scoping, scrolloff).
+  choices (engine, render model, keyboard strategy, compute/daemon
+  split, native arm64 pdf2htmlEX, Vimium scroll scoping, scrolloff).
 
 <!-- br-agent-instructions-v1 -->
 

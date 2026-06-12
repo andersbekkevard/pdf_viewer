@@ -8,9 +8,10 @@
 # Uses pdftocairo at -r 24 DPI + JPEG q=70 — produces ~200px-wide thumbs
 # at roughly 10-20 KB per page for typical text-heavy PDFs.
 #
-# Prefers local `pdftocairo` (brew install poppler) — fast, no Docker
-# startup. Falls back to the pdf2htmlEX Docker image (ships poppler-utils)
-# if no local pdftocairo is on PATH.
+# Requires local `pdftocairo` (brew install poppler). Thumbs are an optional
+# enhancement — if pdftocairo isn't on PATH we log + skip (exit 0) rather than
+# fail, so a fresh convert still completes (the overlay renders skeleton thumb
+# cards in that case).
 #
 # pdftocairo's default naming is zero-padded based on page count
 # (`t-01.jpg`, `t-001.jpg`, …). We rename to unpadded N.jpg so the overlay
@@ -27,7 +28,13 @@ if [[ -z "$PDF" || -z "$OUT_DIR" ]]; then
 fi
 [[ -f "$PDF" ]] || { echo "not a file: $PDF" >&2; exit 1; }
 
-IMAGE="pdf2htmlex/pdf2htmlex:0.18.8.rc2-master-20200820-ubuntu-20.04-x86_64"
+# Optional feature: with no local pdftocairo there's nothing to fall back to
+# now that Docker is gone. Skip cleanly (exit 0) so the caller treats thumbs
+# as simply absent rather than a hard failure.
+if ! command -v pdftocairo >/dev/null 2>&1; then
+    echo "pdftocairo not found (brew install poppler) — skipping thumbs for $PDF" >&2
+    exit 0
+fi
 
 mkdir -p "$OUT_DIR"
 
@@ -37,26 +44,11 @@ trap 'rm -rf "$TMP"' EXIT
 # -cropbox matches pdf2htmlEX's rendering bounds — otherwise we get the
 # MediaBox (default) which includes printer marks / bleed, shifting the
 # content inward vs. the main viewer and exposing edge artifacts.
-if command -v pdftocairo >/dev/null 2>&1; then
-    pdftocairo -jpeg -r 24 -jpegopt quality=70 -cropbox \
-        "$PDF" "$TMP/t" 2>/dev/null || {
-        echo "pdftocairo (local) failed on $PDF" >&2
-        exit 1
-    }
-else
-    pdf_dir=$(dirname "$PDF")
-    pdf_name=$(basename "$PDF")
-    docker run --rm --platform linux/amd64 \
-        --entrypoint pdftocairo \
-        -v "$pdf_dir":/pdf:ro \
-        -v "$TMP":/out \
-        "$IMAGE" \
-        -jpeg -r 24 -jpegopt quality=70 -cropbox \
-        "/pdf/$pdf_name" /out/t 2>/dev/null || {
-        echo "pdftocairo (docker) failed on $PDF" >&2
-        exit 1
-    }
-fi
+pdftocairo -jpeg -r 24 -jpegopt quality=70 -cropbox \
+    "$PDF" "$TMP/t" 2>/dev/null || {
+    echo "pdftocairo failed on $PDF" >&2
+    exit 1
+}
 
 # Rename t-01.jpg / t-001.jpg → N.jpg (unpadded — trivial JS templating).
 count=0

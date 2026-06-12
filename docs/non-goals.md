@@ -13,9 +13,10 @@ Explicitly out of scope. Revisit carefully before adding any of these.
 - **Mobile-native app.** Tailscale-to-laptop-daemon is the fallback
   (phase 8, unbuilt).
 - **Public URLs.** Daemon always binds to `127.0.0.1`.
-- **Docker auto-start from scripts.** Scripts fail fast with a clear
-  "Docker daemon not running" message — see
-  [ADR 0004](adr/0004-on-demand-docker-and-daemon-split.md).
+- **Auto-installing the conversion toolchain.** Conversion uses a native
+  arm64 pdf2htmlEX binary (ADR 0011); scripts fail fast with "native
+  pdf2htmlEX not installed" rather than building or fetching it. (Docker
+  is no longer involved in conversion at all.)
 - **`file://` interception at the extension level.**
   `declarativeNetRequest` can't match `file://`; a content script
   would be needed. Deferred until it actually bites.

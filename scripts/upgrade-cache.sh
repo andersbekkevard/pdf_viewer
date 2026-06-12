@@ -4,7 +4,7 @@
 # pdf_viewer — upgrade-cache.sh
 #
 # Walks ~/.cache/pdf_viewer/ and upgrades cached entries after overlay or
-# engine changes. Two modes, picked explicitly:
+# engine changes. Modes are picked explicitly:
 #
 #   --mode=inject
 #       Re-run the title/favicon/overlay-tag injector (inject-overlay.py) on
@@ -18,19 +18,24 @@
 #           (no re-download — signed URLs often can't be refetched anyway).
 #         - file:// entries: source is the original path from mappings.tsv,
 #           if it still exists. Missing sources are logged and skipped.
-#       Slow and requires Docker. Use after an engine/flag change that
-#       materially affects pdf2htmlEX output.
+#       Slow; requires the native pdf2htmlEX binary. Use after an engine/flag
+#       change that materially affects pdf2htmlEX output.
 #
 #   --mode=meta
 #       Run pdfinfo on every cache entry's source PDF and write <hash>/meta.json.
-#       Uses local `pdfinfo` (brew install poppler) if present, falls back to
-#       the pdf2htmlEX Docker image. Idempotent — existing meta.json files are
-#       overwritten so bumps to the schema propagate cleanly.
+#       Uses local `pdfinfo` (brew install poppler). Idempotent — existing
+#       meta.json files are overwritten so bumps to the schema propagate
+#       cleanly.
 #
 #   --mode=thumbs
 #       Run pdftocairo on every cache entry's source PDF and write per-page
 #       thumbnail JPEGs into <hash>/thumbs/. Skips entries that already have
 #       a thumbs/ directory (idempotent-ish); rm -rf it first to force rebuild.
+#
+#   --mode=light
+#       Build the derived <stem>.light.html variant and page-images/ directory
+#       from the canonical <stem>.html, including collapsed page-level text.
+#       This never mutates mappings.tsv.
 #
 # None of the modes mutate mappings.tsv — cache layout is preserved verbatim.
 # ============================================================================
@@ -42,9 +47,18 @@ REPO_DIR="/Users/andersbekkevard/dev/misc/pdf_viewer"
 CACHE_DIR="$HOME/.cache/pdf_viewer"
 LOG_FILE="$CACHE_DIR/log"
 MAP_FILE="$CACHE_DIR/mappings.tsv"
-IMAGE="pdf2htmlex/pdf2htmlex:0.18.8.rc2-master-20200820-ubuntu-20.04-x86_64"
+# Native arm64 pdf2htmlEX (replaces the old amd64 Docker image). --data-dir
+# is passed explicitly on every invocation; the binary's baked default is
+# fragile.
+NATIVE_BIN="$HOME/.local/opt/pdf2htmlEX/bin/pdf2htmlEX"
+NATIVE_DATA_DIR="$HOME/.local/opt/pdf2htmlEX/share/pdf2htmlEX"
+# Baked poppler-data default is a version-pinned Cellar path that breaks on
+# brew upgrade; pass the stable symlink explicitly (needed for CJK/CID PDFs).
+NATIVE_POPPLER_DATA="/opt/homebrew/share/poppler"
 OVERLAY_VERSION=25
 INJECTOR="$REPO_DIR/scripts/inject-overlay.py"
+EXTERNALIZER="$REPO_DIR/scripts/externalize-page-images.py"
+LIGHT_VARIANTS_ENABLED="${PDF_VIEWER_ENABLE_EXPERIMENTAL_LIGHT:-0}"
 
 mkdir -p "$CACHE_DIR"
 
@@ -54,17 +68,21 @@ die() { printf 'error: %s\n' "$*" >&2; log "FAIL: $*"; exit 1; }
 
 usage() {
     cat <<EOF
-Usage: $(basename "$0") --mode=<inject|reconvert|meta|thumbs>
+Usage: $(basename "$0") --mode=<inject|reconvert|meta|thumbs|light>
 
   --mode=inject      Re-inject title/favicon/overlay tags into every cached
                      <hash>/*.html. No Docker required.
   --mode=reconvert   Re-run pdf2htmlEX on every cache entry from its source
-                     PDF. Requires Docker.
+                     PDF. Requires the native pdf2htmlEX binary.
   --mode=meta        Run pdfinfo on every cache entry's source PDF and
                      write <hash>/meta.json. Idempotent.
   --mode=thumbs      Run pdftocairo on every cache entry's source PDF and
                      write thumbnail JPEGs into <hash>/thumbs/. Skips
                      entries that already have thumbs/.
+  --mode=light       EXPERIMENTAL/DISABLED by default while quality bugs are
+                     open. Requires PDF_VIEWER_ENABLE_EXPERIMENTAL_LIGHT=1.
+                     Builds optional <stem>.light.html files without mutating
+                     mappings.tsv.
 EOF
 }
 
@@ -79,8 +97,8 @@ while [[ $# -gt 0 ]]; do
 done
 
 case "$MODE" in
-    inject|reconvert|meta|thumbs) ;;
-    *) usage >&2; die "--mode is required (inject|reconvert|meta|thumbs)" ;;
+    inject|reconvert|meta|thumbs|light) ;;
+    *) usage >&2; die "--mode is required (inject|reconvert|meta|thumbs|light)" ;;
 esac
 
 # ----------------------------------------------------------------------------
@@ -97,7 +115,8 @@ if [[ "$MODE" == "inject" ]]; then
         case "$html" in "$CACHE_DIR"/_assets/*) continue ;; esac
 
         stem=$(basename "$html" .html)
-        if python3 "$INJECTOR" "$html" "$stem" "$OVERLAY_VERSION" \
+        stem="${stem%.light}"
+        if uv run "$INJECTOR" "$html" "$stem" "$OVERLAY_VERSION" \
                 >>"$LOG_FILE" 2>&1; then
             updated=$((updated + 1))
         else
@@ -117,9 +136,8 @@ fi
 if [[ "$MODE" == "reconvert" ]]; then
     [[ -f "$MAP_FILE" ]] || die "mappings.tsv not found — nothing to reconvert"
 
-    if ! docker info >/dev/null 2>&1; then
-        die "Docker daemon not running — start Docker.app"
-    fi
+    [[ -x "$NATIVE_BIN" ]] || \
+        die "native pdf2htmlEX not installed — run scripts/install-native-pdf2htmlex.sh"
 
     ok=0
     skipped=0
@@ -169,19 +187,30 @@ if [[ "$MODE" == "reconvert" ]]; then
         find "$out_dir" -maxdepth 1 -mindepth 1 ! -name '_source' \
             -exec rm -rf {} + 2>>"$LOG_FILE"
 
-        if docker run --rm --platform linux/amd64 \
-                -e LC_ALL=C.UTF-8 -e LANG=C.UTF-8 \
-                -v "$pdf_dir":/pdf:ro \
-                -v "$out_dir":/out \
-                -w /pdf \
-                "$IMAGE" \
-                --dest-dir /out \
-                "$pdf_name" \
-                > >(grep -v 'perl: warning\|Setting locale failed' >>"$LOG_FILE") \
-                2> >(grep -v 'perl: warning\|Setting locale failed' >>"$LOG_FILE"); then
+        if "$NATIVE_BIN" --data-dir "$NATIVE_DATA_DIR" \
+                --poppler-data-dir "$NATIVE_POPPLER_DATA" --dest-dir "$out_dir" \
+                "$pdf_dir/$pdf_name" >>"$LOG_FILE" 2>&1; then
 
-            if python3 "$INJECTOR" "$out_dir/$out_name" "${pdf_name%.*}" \
+            if uv run "$INJECTOR" "$out_dir/$out_name" "${pdf_name%.*}" \
                     "$OVERLAY_VERSION" >>"$LOG_FILE" 2>&1; then
+                if [[ "$LIGHT_VARIANTS_ENABLED" == "1" ]]; then
+                    light_out_name="${out_name%.html}.light.html"
+                    if uv run "$EXTERNALIZER" \
+                            "$out_dir/$out_name" "$out_dir/$light_out_name" \
+                            --image-dir "$out_dir/page-images" \
+                            --url-prefix "/$hash/page-images/" \
+                            --eager 2 \
+                            --clean >>"$LOG_FILE" 2>&1; then
+                        uv run "$INJECTOR" "$out_dir/$light_out_name" "${pdf_name%.*}" \
+                            "$OVERLAY_VERSION" >>"$LOG_FILE" 2>&1 \
+                            || log "reconvert [$idx/$total] light inject FAILED: $out_dir/$light_out_name"
+                    else
+                        log "reconvert [$idx/$total] light FAILED: $source_ref"
+                        rm -f "$out_dir/$light_out_name"
+                    fi
+                else
+                    log "reconvert [$idx/$total] light skipped pending search/selection/resolution fixes"
+                fi
                 ok=$((ok + 1))
             else
                 log "reconvert [$idx/$total] inject FAILED: $out_dir/$out_name"
@@ -194,6 +223,71 @@ if [[ "$MODE" == "reconvert" ]]; then
     done < "$MAP_FILE"
 
     say "upgrade-cache reconvert: $ok ok, $skipped skipped, $failed failed"
+    exit $(( failed > 0 ? 1 : 0 ))
+fi
+
+# ----------------------------------------------------------------------------
+# Mode: light
+# ----------------------------------------------------------------------------
+if [[ "$MODE" == "light" ]]; then
+    if [[ "$LIGHT_VARIANTS_ENABLED" != "1" ]]; then
+        die "--mode=light is disabled while light HTML quality bugs are open; set PDF_VIEWER_ENABLE_EXPERIMENTAL_LIGHT=1 to override for targeted testing"
+    fi
+    [[ -f "$MAP_FILE" ]] || die "mappings.tsv not found — nothing to externalize"
+
+    ok=0
+    skipped=0
+    failed=0
+    total=$(wc -l < "$MAP_FILE" | tr -d ' ')
+    say "light: $total cache entries queued"
+
+    idx=0
+    while IFS=$'\t' read -r ts source_ref hash html_path; do
+        idx=$((idx + 1))
+        [[ -n "${hash:-}" ]] || { skipped=$((skipped + 1)); continue; }
+
+        out_dir="$CACHE_DIR/$hash"
+        if [[ ! -d "$out_dir" ]]; then
+            log "light [$idx/$total] skip (no dir): $hash"
+            skipped=$((skipped + 1))
+            continue
+        fi
+
+        html="$html_path"
+        if [[ -z "$html" || ! -f "$html" || "$html" == *.light.html ]]; then
+            html=$(find "$out_dir" -maxdepth 1 -type f -name '*.html' ! -name '*.light.html' | sort | head -1)
+        fi
+        if [[ -z "$html" || ! -f "$html" ]]; then
+            log "light [$idx/$total] skip (no canonical html): $hash"
+            skipped=$((skipped + 1))
+            continue
+        fi
+
+        stem=$(basename "$html" .html)
+        light_html="$out_dir/${stem}.light.html"
+        say "light [$idx/$total]: $hash"
+
+        if uv run "$EXTERNALIZER" \
+                "$html" "$light_html" \
+                --image-dir "$out_dir/page-images" \
+                --url-prefix "/$hash/page-images/" \
+                --eager 2 \
+                --clean >>"$LOG_FILE" 2>&1; then
+            if uv run "$INJECTOR" "$light_html" "$stem" "$OVERLAY_VERSION" \
+                    >>"$LOG_FILE" 2>&1; then
+                ok=$((ok + 1))
+            else
+                log "light [$idx/$total] inject FAILED: $light_html"
+                failed=$((failed + 1))
+            fi
+        else
+            log "light [$idx/$total] FAILED: $html"
+            rm -f "$light_html"
+            failed=$((failed + 1))
+        fi
+    done < "$MAP_FILE"
+
+    say "upgrade-cache light: $ok ok, $skipped skipped, $failed failed"
     exit $(( failed > 0 ? 1 : 0 ))
 fi
 
