@@ -34,8 +34,8 @@
 #       a thumbs/ directory (idempotent-ish); rm -rf it first to force rebuild.
 #
 #   --mode=light
-#       Build the derived <stem>.light.html variant and page-images/ directory
-#       from the canonical <stem>.html, including collapsed page-level text.
+#       Build the derived <stem>.light.html variant and
+#       page-images/ directory from canonical HTML.
 #       This never mutates mappings.tsv.
 #
 # None of the modes mutate mappings.tsv — cache layout is preserved verbatim.
@@ -58,7 +58,7 @@ NATIVE_DATA_DIR="$HOME/.local/opt/pdf2htmlEX/share/pdf2htmlEX"
 NATIVE_POPPLER_DATA="/opt/homebrew/share/poppler"
 INJECTOR="$REPO_DIR/scripts/inject-overlay.py"
 EXTERNALIZER="$REPO_DIR/scripts/externalize-page-images.py"
-LIGHT_VARIANTS_ENABLED="${PDF_VIEWER_ENABLE_EXPERIMENTAL_LIGHT:-0}"
+LIGHT_VARIANTS_ENABLED="${PDF_VIEWER_ENABLE_LIGHT:-${PDF_VIEWER_ENABLE_EXPERIMENTAL_LIGHT:-1}}"
 
 mkdir -p "$CACHE_DIR"
 
@@ -79,10 +79,8 @@ Usage: $(basename "$0") --mode=<inject|reconvert|meta|thumbs|light>
   --mode=thumbs      Run pdftocairo on every cache entry's source PDF and
                      write thumbnail JPEGs into <hash>/thumbs/. Skips
                      entries that already have thumbs/.
-  --mode=light       EXPERIMENTAL/DISABLED by default while quality bugs are
-                     open. Requires PDF_VIEWER_ENABLE_EXPERIMENTAL_LIGHT=1.
-                     Builds optional <stem>.light.html files without mutating
-                     mappings.tsv.
+  --mode=light       Build <stem>.light.html files without mutating
+                     mappings.tsv. Disabled by PDF_VIEWER_ENABLE_LIGHT=0.
 EOF
 }
 
@@ -200,6 +198,7 @@ if [[ "$MODE" == "reconvert" ]]; then
                             --image-dir "$out_dir/page-images" \
                             --url-prefix "/$hash/page-images/" \
                             --eager 2 \
+                            --text-layer=paint-safe \
                             --clean >>"$LOG_FILE" 2>&1; then
                         uv run "$INJECTOR" "$out_dir/$light_out_name" "${pdf_name%.*}" \
                             >>"$LOG_FILE" 2>&1 \
@@ -209,7 +208,7 @@ if [[ "$MODE" == "reconvert" ]]; then
                         rm -f "$out_dir/$light_out_name"
                     fi
                 else
-                    log "reconvert [$idx/$total] light skipped pending search/selection/resolution fixes"
+                    log "reconvert [$idx/$total] light variant disabled by PDF_VIEWER_ENABLE_LIGHT=0"
                 fi
                 # Conversion provenance — pipeline-owned. The dir was wiped
                 # above, so this creates a fresh provenance-only meta.json;
@@ -242,7 +241,7 @@ fi
 # ----------------------------------------------------------------------------
 if [[ "$MODE" == "light" ]]; then
     if [[ "$LIGHT_VARIANTS_ENABLED" != "1" ]]; then
-        die "--mode=light is disabled while light HTML quality bugs are open; set PDF_VIEWER_ENABLE_EXPERIMENTAL_LIGHT=1 to override for targeted testing"
+        die "--mode=light is disabled by PDF_VIEWER_ENABLE_LIGHT=0"
     fi
     [[ -f "$MAP_FILE" ]] || die "mappings.tsv not found — nothing to externalize"
 
@@ -283,6 +282,7 @@ if [[ "$MODE" == "light" ]]; then
                 --image-dir "$out_dir/page-images" \
                 --url-prefix "/$hash/page-images/" \
                 --eager 2 \
+                --text-layer=paint-safe \
                 --clean >>"$LOG_FILE" 2>&1; then
             if uv run "$INJECTOR" "$light_html" "$stem" \
                     >>"$LOG_FILE" 2>&1; then

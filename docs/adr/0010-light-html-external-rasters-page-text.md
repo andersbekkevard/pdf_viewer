@@ -1,91 +1,100 @@
-# ADR 0010 — Light HTML With External Rasters And Page Text
+# ADR 0010 — Paint-Safe Light HTML With External Rasters
 
-**Status**: Proposed
-**Date**: 2026-05-21
-
-> Implementation is guarded behind `PDF_VIEWER_ENABLE_EXPERIMENTAL_LIGHT=1`.
-> The memory result is promising, but rollout is blocked by known
-> image-resolution, selection, and native-search quality bugs.
+**Status**: Accepted
+**Date**: 2026-05-21 (accepted 2026-07-12)
 
 ## Context
 
-Large pdf2htmlEX books can make the browser renderer enormous. The 1,677-page
-algorithms book was the forcing case: the canonical HTML was about 498 MB on
-disk, and a headless Chrome renderer reached about 13 GB physical footprint in
-the repeatable `footprint -p <renderer> -summary` check.
+Large pdf2htmlEX books can make the browser renderer enormous. AlgDat, the
+1,677-page forcing case, has about 475 MiB canonical HTML. Its renderer
+footprint was 12.385 GiB in the repeatable far-find journey.
 
 There were two independent causes:
 
 1. pdf2htmlEX embedded every full-page raster as a base64 `data:` URL in the
    HTML, forcing the browser to parse and retain a huge document payload before
    it even decided which pages were visible.
-2. The selectable text layer contained millions of glyph/spacer spans. Keeping
-   those nodes in the layout tree is what made ADR 0009's native `Cmd-F`
-   behavior work, but the memory cost was too high for book-length documents.
+2. The selectable text layer contains millions of glyph/spacer spans. Its
+   paint role is document-specific: removing or simplifying a visible line can
+   change pixels even when a page raster sits behind it.
 
 ## Decision
 
 Keep the canonical pdf2htmlEX output as `<stem>.html`, but generate a derived
 `<stem>.light.html` for normal viewing.
 
-The light variant:
+Production light-v1 uses root mode
+`data-pdf2html-text-mode="paint-safe"` and has:
 
-- extracts page rasters into `page-images/0001.png`, `0002.png`, ...;
-- rewrites page `<img class="bi">` nodes to use `data-pdf2html-src`;
-- lets `assets/overlay.js` mount `src` only for the current viewport plus a
-  small margin;
-- collapses the glyph-level text layer to one transparent
-  `.pdf2html-page-text` node per page;
-- marks the document with `data-pdf2html-text-flattened="page"` and
-  `body.pdf2html-light`.
+- an external raster in `page-images/0001.png`, `0002.png`, ... as the visual
+  source of truth;
+- the original positioned `.t` line order for native find, drag selection,
+  copy, and targeting;
+- simplification and `data-pdf2html-paint-safe="hidden"` marking only for a
+  `.t` line proved to be hidden fallback text from conservative,
+  document-local CSS visibility semantics;
+- byte-for-byte preservation of every visible or ambiguous `.t` line;
+- observable raster lifecycle state on `.pf`: `unloaded`, `loading`, `ready`,
+  or `error`.
 
-The daemon adds `/view-light` and `/view-light-raw`. These serve the light
-file when it exists and fall back to canonical HTML otherwise. `/view` and
-`/view-raw` remain canonical routes. `mappings.tsv` continues to point at the
-canonical file only. Broad generation is disabled until the quality blockers
-are fixed.
+`scripts/externalize-page-images.py` owns producing and validating this shape.
+It marks the root with `data-pdf2html-representation="light-v1"` and
+`data-pdf2html-text-mode="paint-safe"`. `geometry` and `original` remain
+explicit diagnostic experiments, not production routing modes.
+`assets/overlay-document.js` is the small consumer interface for pages, text,
+and raster lifecycle.
+
+Normal `/view` and `/view-raw` routes prefer light-v1 and fall back to canonical
+HTML. `/view-canonical` and `/view-canonical-raw` are explicit rollback routes;
+direct canonical cache URLs remain valid. `mappings.tsv` still points at the
+canonical file so the derived representation can always be rebuilt.
 
 ## Rationale
 
-This keeps rollback cheap. If the light variant has a bad edge case, deleting
-`<stem>.light.html` or using `/view` immediately returns to the original
-pdf2htmlEX behavior. Existing cache rows do not need migration and stale light
-files can be rebuilt with `PDF_VIEWER_ENABLE_EXPERIMENTAL_LIGHT=1
-scripts/upgrade-cache.sh --mode=light` for targeted testing.
+This keeps rollback cheap. Deleting `<stem>.light.html` or using
+`/view-canonical` returns to original pdf2htmlEX behavior;
+`PDF_VIEWER_ENABLE_LIGHT=0` disables new light generation; the legacy
+`PDF_VIEWER_ENABLE_EXPERIMENTAL_LIGHT` flag remains honored.
+`scripts/upgrade-cache.sh --mode=light` builds or rebuilds derived files from
+canonical HTML without changing `mappings.tsv`.
 
 External page rasters remove the worst HTML payload without changing visual
 fidelity: the page raster is still the source of truth for what the user sees.
 Lazy mounting prevents native find jumps from keeping hundreds of decoded
 page PNGs alive.
 
-Page-level text is the proposed compromise. It keeps native browser find and
-copy on real DOM text, but avoids millions of pdf2htmlEX span nodes. The
-canonical route remains available when exact line-level text boxes matter.
+The parser deliberately does not attempt a full CSS cascade. When it cannot
+prove that a fallback `.t` line is hidden, it leaves that line untouched. This
+keeps the raster as the idle visual source while preserving the canonical DOM
+where it might still paint.
 
 ## Consequences
 
 ### Wins
 
-- The algorithms book's light HTML is about 11 MB instead of about 498 MB.
-- The same renderer measurement dropped from about 13 GB on canonical HTML to
-  about 1.2 GB on light HTML after a native-find jump.
+- AlgDat's paint-safe light HTML is about 40 MiB, versus about 475 MiB
+  canonical HTML.
+- Renderer footprint in the same measurement family: canonical 12.385 GiB;
+  original/conservative 10.622 GiB; geometry 3.542 GiB; paint-safe 5.153 GiB.
 - Normal opens no longer parse hundreds of megabytes of embedded base64.
-- Only nearby page rasters have a live `src`; after a far `window.find()` jump,
-  the verified loaded raster count stayed at 6 instead of hundreds.
+- Canonical and original/conservative runs froze before native find. Paint-safe
+  completed six far-find advance/settle steps; real Comet native find reported
+  26 hits and reached page 918, followed by line-aligned drag and copy.
+- ArXiv representative pages and zoom levels had AE=0. Exact external rasters
+  and all visible or ambiguous lines were preserved.
 
 ### Accepted Downsides
 
-- Light mode's native `Cmd-F` target is page-level, not exact line-level. It
-  still selects real DOM text and scrolls to the owning page, but the raster is
-  the visual source and the searchable text node is transparent.
-- Drag selection in light mode is coarser than canonical pdf2htmlEX selection.
-  The exact text-layout path is the canonical `<stem>.html` route.
+- Native-find highlighting may overlap slightly where fallback-font metrics
+  differ, although idle pixels remain raster-faithful.
 - The cache stores extracted page images next to the canonical HTML. Disk usage
   is not reduced; browser memory is.
+- Paint-safe is intentionally less memory-minimal than the geometry experiment:
+  preserving anything that might paint takes precedence over a smaller DOM.
 
 ## Related
 
 - ADR 0009 — Native Cmd-F via `content-visibility: auto`
 - `scripts/externalize-page-images.py`
-- `assets/overlay.js::mountExternalPageRasters`
+- `assets/overlay-document.js`
 - `docs/cache.md`

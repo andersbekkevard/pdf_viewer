@@ -57,7 +57,7 @@ NATIVE_DATA_DIR="$HOME/.local/opt/pdf2htmlEX/share/pdf2htmlEX"
 NATIVE_POPPLER_DATA="/opt/homebrew/share/poppler"
 INJECTOR="$REPO_DIR/scripts/inject-overlay.py"
 EXTERNALIZER="$REPO_DIR/scripts/externalize-page-images.py"
-LIGHT_VARIANTS_ENABLED="${PDF_VIEWER_ENABLE_EXPERIMENTAL_LIGHT:-0}"
+LIGHT_VARIANTS_ENABLED="${PDF_VIEWER_ENABLE_LIGHT:-${PDF_VIEWER_ENABLE_EXPERIMENTAL_LIGHT:-1}}"
 
 mkdir -p "$CACHE_DIR"
 
@@ -143,6 +143,7 @@ for idx in "${!PDFS[@]}"; do
                     --image-dir "$out_dir/page-images" \
                     --url-prefix "/$hash/page-images/" \
                     --eager 2 \
+                    --text-layer=paint-safe \
                     --clean >>"$LOG_FILE" 2>&1; then
                 uv run "$INJECTOR" "$out_dir/$light_out_name" "${pdf_name%.*}" \
                     >>"$LOG_FILE" 2>&1 \
@@ -152,7 +153,7 @@ for idx in "${!PDFS[@]}"; do
                 rm -f "$out_dir/$light_out_name"
             fi
         else
-            log "[${n}/${total}] light variant skipped pending search/selection/resolution fixes: $pdf"
+            log "[${n}/${total}] light variant disabled by PDF_VIEWER_ENABLE_LIGHT=0: $pdf"
         fi
         converted=$((converted + 1))
         did_convert=1

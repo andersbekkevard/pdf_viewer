@@ -16,14 +16,16 @@ component overview.
 
 ## Architecture (how it all fits together)
 
-Six loosely-coupled parts, each with a narrow job:
+Seven loosely-coupled parts, each with a narrow job:
 
-- **`assets/overlay*.js` + `assets/overlay.css`** — all UX behavior
-  (~2.5k LoC JS, ~1.2k LoC CSS). `overlay.js` is the ES-module entry
-  point (loaded `type="module"`, no bundler / no build step); it owns
-  shared closure state and imports leaf modules via plain relative
-  specifiers — currently `overlay-finger.js` (finger/hint mode), wired
-  through a small `core` object at `init()`. Served live at `/_assets/`
+- **`assets/overlay*.js` + `assets/overlay.css`** — all UX behavior.
+  `overlay.js` is the ES-module composition root (loaded `type="module"`,
+  no bundler / no build step). It wires concept-level modules through explicit
+  capability objects: `overlay-library.js` owns cached-entry lifecycle,
+  `overlay-navigation.js` owns document position and structural movement,
+  `overlay-text.js` owns selection/search/clipboard/scrolloff,
+  `overlay-commands.js` owns the palette/finder/help surface, and
+  `overlay-finger.js` owns finger/hint mode. Served live at `/_assets/`
   via a symlink from the cache dir, so edits reload on ⌘⇧R without
   reconversion. This is where ~90 % of day-to-day work happens.
 - **`scripts/pdf2html-convert.sh`** — single-PDF conversion
@@ -34,9 +36,14 @@ Six loosely-coupled parts, each with a narrow job:
   hashes every PDF and skips anything already cached.
 - **`scripts/inject-overlay.py`** — idempotent `<script>`/`<link>`
   injector, shared between fresh conversions and `upgrade-cache.sh`.
+- **`scripts/externalize-page-images.py`** — builds the default paint-safe
+  `<stem>.light.html` derivative: page rasters become external files; only
+  `.t` lines proved hidden fallback text from document-local CSS are simplified
+  and marked. Visible or ambiguous lines remain byte-for-byte canonical.
 - **`daemon/` (FastAPI, uv)** — read-only cache server on port
-  **7435**. Routes: `/view?path=` / `/view?url=` / `/<hash>/<file>` /
-  `/_assets/*` / `/healthz` / `/stats` / `/library`. Run via launchd
+  **7435**. Normal `/view` and `/view-raw` prefer paint-safe light HTML with
+  canonical fallback; `/view-canonical` is rollback. Other routes include
+  `/<hash>/<file>` / `/_assets/*` / `/healthz` / `/stats` / `/library`. Run via launchd
   (`launchd/com.anders.pdf_viewer.plist`). Cache lookup ≈ 1–3 ms.
   **The daemon never touches Docker.**
 - **`extension/` (Comet MV3)** — two static `declarativeNetRequest`
@@ -58,7 +65,8 @@ Those entrypoints are deliberately trivial `nohup` forks into
 ## Common tasks
 
 ### Overlay changes (90 % of work)
-1. Edit `assets/overlay.js` or `assets/overlay.css`.
+1. Edit the owning `assets/overlay-*.js` module, `assets/overlay.js` composition
+   root, or `assets/overlay.css`.
 2. ⌘⇧R in an already-open converted tab — served live via symlink, no
    reconversion needed.
 
@@ -76,6 +84,10 @@ Those entrypoints are deliberately trivial `nohup` forks into
 - Bulk re-inject the overlay over all cached HTML to rewrite old `?v=`
   to the current hash (no Docker, seconds):
   `scripts/upgrade-cache.sh --mode=inject`.
+- Build a derived paint-safe light artifact from canonical HTML without
+  changing `mappings.tsv`: `scripts/upgrade-cache.sh --mode=light`.
+  Generation is on by default; `PDF_VIEWER_ENABLE_LIGHT=0` disables it, while
+  the legacy `PDF_VIEWER_ENABLE_EXPERIMENTAL_LIGHT` flag remains compatible.
 
 ### Running / restarting the daemon
 - Dev: `uv run --directory daemon main.py`
@@ -144,6 +156,11 @@ explicitly.
   `.pc { display: none }` gating — Chromium find skips `display:none`
   text and the surrogate-shadow architecture that papered over that
   was deleted in ADR 0009.
+- **Paint-safe is the production light-text mode.** Do not promote
+  `geometry` or `original` text modes from `externalize-page-images.py` to
+  normal routing: they are explicit diagnostics. Paint-safe derives hidden
+  fallback status only from conservative document-local CSS semantics; visible
+  or ambiguous `.t` lines must remain byte-for-byte canonical.
 - **Don't add unconditional `contain: layout paint style` to `.pf`.**
   ADR 0002 tried it (separate from `content-visibility: auto`) and saw
   797-layer compositor churn on long docs. `content-visibility: auto`'s

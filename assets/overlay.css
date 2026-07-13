@@ -206,15 +206,54 @@ body.pdf2html-search-entered ::-moz-selection { background: transparent; color: 
     visibility: hidden;
 }
 
-/* Light cache variants keep selectable/findable text, but use the page raster
-   as the visual source. This avoids repainting a second full text copy over
-   thousands of pages after the converter flattens pdf2htmlEX's glyph spans. */
-body.pdf2html-light #page-container .t,
-body.pdf2html-light #page-container .t * {
+/* Geometry-mode light variants keep selectable/findable positioned text, but
+   use the page raster as the visual source. pdf2htmlEX marks fallback-font
+   lines visibility:hidden; override that here so Chromium indexes them, while
+   transparent paint leaves the byte-identical raster as the visual source.
+   Original-mode light variants retain pdf2htmlEX's paint untouched. */
+html[data-pdf2html-representation="light-v1"][data-pdf2html-text-mode="geometry"]
+body #page-container .t,
+html[data-pdf2html-representation="light-v1"][data-pdf2html-text-mode="geometry"]
+body #page-container .t * {
     color: transparent !important;
     text-shadow: none !important;
 }
 
+/* The raster is paint only. Let hit-testing reach the positioned text model
+   underneath so mouse drag and caret placement operate on logical text. */
+body.pdf2html-light #page-container .pc > img.bi {
+    pointer-events: none !important;
+    user-select: none !important;
+}
+
+/* scroll-padding is desirable for keyboard/caret motion, but Chromium also
+   applies it continuously during a pointer drag. With a centered cursor that
+   turns a horizontal selection into runaway page scrolling. */
+body.pdf2html-pointer-selecting #page-container {
+    scroll-padding-block: 0 !important;
+}
+
+html[data-pdf2html-representation="light-v1"][data-pdf2html-text-mode="geometry"]
+body #page-container .t,
+html[data-pdf2html-representation="light-v1"][data-pdf2html-text-mode="geometry"]
+body #page-container .t * {
+    visibility: visible !important;
+}
+
+/* Paint-safe light variants retain canonical paint everywhere except fallback
+   lines that the converter proved are hidden by their own document-local
+   ``ff*`` rule. Those marked lines are made findable/selectable, but their
+   transparent text leaves the page raster as the only visible paint source. */
+html[data-pdf2html-representation="light-v1"][data-pdf2html-text-mode="paint-safe"]
+body #page-container .t.pdf2html-paint-safe[data-pdf2html-paint-safe="hidden"],
+html[data-pdf2html-representation="light-v1"][data-pdf2html-text-mode="paint-safe"]
+body #page-container .t.pdf2html-paint-safe[data-pdf2html-paint-safe="hidden"] * {
+    color: transparent !important;
+    text-shadow: none !important;
+    visibility: visible !important;
+}
+
+/* Legacy page-text light artifacts remain readable for rollback/testing. */
 body.pdf2html-light #page-container .pdf2html-page-text {
     position: absolute;
     inset: 0;

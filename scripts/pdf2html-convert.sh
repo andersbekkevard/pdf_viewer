@@ -35,7 +35,7 @@ NATIVE_DATA_DIR="$HOME/.local/opt/pdf2htmlEX/share/pdf2htmlEX"
 NATIVE_POPPLER_DATA="/opt/homebrew/share/poppler"
 INJECTOR="$REPO_DIR/scripts/inject-overlay.py"
 EXTERNALIZER="$REPO_DIR/scripts/externalize-page-images.py"
-LIGHT_VARIANTS_ENABLED="${PDF_VIEWER_ENABLE_EXPERIMENTAL_LIGHT:-0}"
+LIGHT_VARIANTS_ENABLED="${PDF_VIEWER_ENABLE_LIGHT:-${PDF_VIEWER_ENABLE_EXPERIMENTAL_LIGHT:-1}}"
 
 mkdir -p "$CACHE_DIR"
 # The Raycast wrapper forks us into the background and redirects all stdio
@@ -205,8 +205,8 @@ uv run "$INJECTOR" \
 # `content-visibility: auto` on `.pf` (overlay.css). No surrogate text layer,
 # no `text.json`. See ADR 0009.
 
-# Derived light variant. Disabled by default while pdfv-yg1.17's follow-up
-# quality bugs are open; opt in with PDF_VIEWER_ENABLE_EXPERIMENTAL_LIGHT=1.
+# Derived light-v1 variant. Enabled by default; set PDF_VIEWER_ENABLE_LIGHT=0
+# to keep only the canonical artifact. The legacy flag remains compatible.
 LIGHT_OUT_NAME="${OUT_NAME%.html}.light.html"
 if [[ "$LIGHT_VARIANTS_ENABLED" == "1" && ( ! -f "$OUT_DIR/$LIGHT_OUT_NAME" || "$OUT_DIR/$OUT_NAME" -nt "$OUT_DIR/$LIGHT_OUT_NAME" ) ]]; then
     log "light variant start: $OUT_DIR/$LIGHT_OUT_NAME"
@@ -215,6 +215,7 @@ if [[ "$LIGHT_VARIANTS_ENABLED" == "1" && ( ! -f "$OUT_DIR/$LIGHT_OUT_NAME" || "
             --image-dir "$OUT_DIR/page-images" \
             --url-prefix "/$HASH/page-images/" \
             --eager 2 \
+            --text-layer=paint-safe \
             --clean; then
         log "light variant done: $LIGHT_OUT_NAME"
     else
@@ -222,7 +223,7 @@ if [[ "$LIGHT_VARIANTS_ENABLED" == "1" && ( ! -f "$OUT_DIR/$LIGHT_OUT_NAME" || "
         rm -f "$OUT_DIR/$LIGHT_OUT_NAME"
     fi
 elif [[ "$LIGHT_VARIANTS_ENABLED" != "1" ]]; then
-    log "light variant generation disabled pending search/selection/resolution fixes"
+    log "light variant generation disabled by PDF_VIEWER_ENABLE_LIGHT=0"
 fi
 if [[ "$LIGHT_VARIANTS_ENABLED" == "1" && -f "$OUT_DIR/$LIGHT_OUT_NAME" ]]; then
     uv run "$INJECTOR" \

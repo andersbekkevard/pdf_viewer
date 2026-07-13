@@ -1,0 +1,460 @@
+"""Cache catalog: the filesystem-backed interface to converted PDFs.
+
+The catalog owns cache identity, mappings, representations, disabled state,
+native-source discovery, library projection, and safe mutations.  It never
+converts PDFs; producers remain the scripts described by ADR 0004.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass
+import hashlib
+import html as html_lib
+import json
+import pathlib
+import re
+import shutil
+import urllib.parse
+from typing import Optional, Protocol
+
+
+LIGHT_HTML_SUFFIX = ".light.html"
+PASSTHROUGH_MARKER = "_pdfvw=passthrough"
+HASH_RE = re.compile(r"^[a-f0-9]{6,32}$")
+NAME_MAX_LEN = 200
+
+
+class CatalogError(Exception):
+    """Base class for cache-interface errors."""
+
+
+class InvalidCatalogInput(CatalogError):
+    pass
+
+
+class EntryNotFound(CatalogError):
+    pass
+
+
+class NameConflict(CatalogError):
+    pass
+
+
+class Activity(Protocol):
+    def all_frecency(self) -> dict[str, dict]: ...
+    def boost(self, hash_: str, n: int = 3) -> int: ...
+    def forget(self, hash_: str) -> int: ...
+
+
+class NullActivity:
+    def all_frecency(self) -> dict[str, dict]:
+        return {}
+
+    def boost(self, hash_: str, n: int = 3) -> int:
+        return 0
+
+    def forget(self, hash_: str) -> int:
+        return 0
+
+
+@dataclass(frozen=True)
+class Mapping:
+    hash: str
+    source_ref: str
+    name: str
+    html_path: pathlib.Path
+
+
+@dataclass(frozen=True)
+class Representation:
+    hash: str
+    canonical: pathlib.Path
+    selected: pathlib.Path
+    light: Optional[pathlib.Path]
+
+
+@dataclass(frozen=True)
+class ResolvedSource:
+    hash: str
+    source_ref: str
+    representation: Optional[Representation]
+    disabled: bool
+
+
+@dataclass(frozen=True)
+class NativeSource:
+    kind: str
+    value: pathlib.Path | str
+
+
+def url_hash(url: str) -> str:
+    parsed = urllib.parse.urlparse(url)
+    return hashlib.sha256(f"{parsed.netloc}{parsed.path}".encode()).hexdigest()[:16]
+
+
+def strip_passthrough(url: str) -> str:
+    parsed = urllib.parse.urlparse(url)
+    if not parsed.query:
+        return url
+    pairs = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+    cleaned = [(k, v) for k, v in pairs if (k, v) != ("_pdfvw", "passthrough")]
+    return urllib.parse.urlunparse(parsed._replace(query=urllib.parse.urlencode(cleaned)))
+
+
+def with_passthrough(url: str) -> str:
+    parsed = urllib.parse.urlparse(url)
+    pairs = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+    if ("_pdfvw", "passthrough") in pairs:
+        return url
+    query = f"{parsed.query}&{PASSTHROUGH_MARKER}" if parsed.query else PASSTHROUGH_MARKER
+    return urllib.parse.urlunparse(parsed._replace(query=query))
+
+
+class CacheCatalog:
+    """Deep module over one cache root.
+
+    Callers provide only source identities, entry hashes, and representation
+    preference. Filesystem layout and cross-file mutation rules stay here.
+    """
+
+    def __init__(self, root: pathlib.Path, activity: Optional[Activity] = None):
+        self.root = root
+        self.activity = activity or NullActivity()
+        self._content_hashes: dict[tuple[str, int, int], str] = {}
+
+    @property
+    def mappings_path(self) -> pathlib.Path:
+        return self.root / "mappings.tsv"
+
+    @property
+    def disabled_path(self) -> pathlib.Path:
+        return self.root / "disabled.json"
+
+    def validate_hash(self, hash_: str) -> str:
+        if not HASH_RE.fullmatch(hash_):
+            raise InvalidCatalogInput("invalid hash")
+        return hash_
+
+    def mappings(self) -> dict[str, Mapping]:
+        out: dict[str, Mapping] = {}
+        if not self.mappings_path.is_file():
+            return out
+        with self.mappings_path.open(encoding="utf-8") as source:
+            for line in source:
+                parts = line.rstrip("\n").split("\t")
+                if len(parts) < 4:
+                    continue
+                _ts, source_ref, hash_, html_path = parts[:4]
+                path = pathlib.Path(html_path) if html_path else self.root / hash_ / f"{hash_}.html"
+                out[hash_] = Mapping(hash_, source_ref, path.stem, path)
+        return out
+
+    def _content_hash(self, path: pathlib.Path) -> str:
+        stat = path.stat()
+        key = (str(path), stat.st_mtime_ns, stat.st_size)
+        if key in self._content_hashes:
+            return self._content_hashes[key]
+        digest = hashlib.sha256()
+        with path.open("rb") as source:
+            for chunk in iter(lambda: source.read(1 << 20), b""):
+                digest.update(chunk)
+        value = digest.hexdigest()[:16]
+        self._content_hashes[key] = value
+        return value
+
+    def _mapped_hash_for_path(self, path: pathlib.Path) -> Optional[str]:
+        try:
+            needle = str(path.expanduser().resolve(strict=True))
+        except FileNotFoundError:
+            needle = str(path.expanduser())
+        return next((h for h, m in self.mappings().items()
+                     if strip_passthrough(m.source_ref) == needle), None)
+
+    def _hash_for_local_path(self, path: pathlib.Path) -> Optional[str]:
+        mapped = self._mapped_hash_for_path(path)
+        if mapped:
+            return mapped
+        try:
+            resolved = path.expanduser().resolve(strict=True)
+        except FileNotFoundError:
+            return None
+        if not resolved.is_file():
+            return None
+        try:
+            return self._content_hash(resolved)
+        except OSError:
+            return None
+
+    def resolve_source(self, source: str | pathlib.Path, *, prefer_light: bool = False) -> ResolvedSource:
+        if isinstance(source, pathlib.Path):
+            hash_ = self._mapped_hash_for_path(source)
+            if hash_ is None:
+                try:
+                    hash_ = self._content_hash(source)
+                except OSError:
+                    hash_ = ""
+            source_ref = str(source)
+        else:
+            parsed = urllib.parse.urlparse(source)
+            if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+                raise InvalidCatalogInput("source URL must be absolute http(s)")
+            source_ref = strip_passthrough(source)
+            hash_ = url_hash(source_ref)
+        representation = self.locate_representation(hash_, prefer_light=prefer_light) if hash_ else None
+        return ResolvedSource(hash_, source_ref, representation, self.is_disabled(hash_))
+
+    @staticmethod
+    def _is_light(path: pathlib.Path) -> bool:
+        return path.name.endswith(LIGHT_HTML_SUFFIX)
+
+    @staticmethod
+    def light_path(canonical: pathlib.Path) -> pathlib.Path:
+        return canonical if CacheCatalog._is_light(canonical) else canonical.with_name(canonical.stem + LIGHT_HTML_SUFFIX)
+
+    def locate_representation(self, hash_: str, *, prefer_light: bool = False) -> Optional[Representation]:
+        if not hash_ or not HASH_RE.fullmatch(hash_):
+            return None
+        entry_dir = self.root / hash_
+        if not entry_dir.is_dir():
+            return None
+        matches = sorted(entry_dir.glob("*.html"))
+        canonical_matches = [path for path in matches if not self._is_light(path)]
+        canonical = canonical_matches[0] if canonical_matches else (matches[0] if matches else None)
+        if canonical is None:
+            return None
+        light_candidate = self.light_path(canonical)
+        light = light_candidate if light_candidate.is_file() and light_candidate != canonical else None
+        selected = light if prefer_light and light is not None else canonical
+        return Representation(hash_, canonical, selected, light)
+
+    def require_representation(self, hash_: str, *, prefer_light: bool = True) -> Representation:
+        self.validate_hash(hash_)
+        representation = self.locate_representation(hash_, prefer_light=prefer_light)
+        if representation is None:
+            raise EntryNotFound(f"no cached PDF viewer entry for hash {hash_}")
+        return representation
+
+    def source_ref(self, hash_: str) -> Optional[str]:
+        mapping = self.mappings().get(hash_)
+        return strip_passthrough(mapping.source_ref) if mapping else None
+
+    def cached_source(self, hash_: str) -> Optional[pathlib.Path]:
+        source_dir = self.root / hash_ / "_source"
+        matches = sorted(source_dir.glob("*.pdf")) if source_dir.is_dir() else []
+        return matches[0] if matches else None
+
+    def native_source(self, hash_: str) -> NativeSource:
+        self.require_representation(hash_)
+        source_ref = self.source_ref(hash_)
+        if source_ref and source_ref.startswith("/"):
+            path = pathlib.Path(source_ref).expanduser()
+            if not path.is_file():
+                raise EntryNotFound(f"source PDF not found: {source_ref}")
+            return NativeSource("file", path)
+        cached = self.cached_source(hash_)
+        if cached:
+            return NativeSource("file", cached)
+        if source_ref and source_ref.startswith(("http://", "https://")):
+            return NativeSource("url", with_passthrough(source_ref))
+        raise EntryNotFound(f"no native PDF source for hash {hash_}")
+
+    def _disabled_hashes(self) -> set[str]:
+        try:
+            data = json.loads(self.disabled_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return set()
+        values = data.get("disabled", []) if isinstance(data, dict) else data if isinstance(data, list) else []
+        return {value for value in values if isinstance(value, str) and HASH_RE.fullmatch(value)}
+
+    def is_disabled(self, hash_: str) -> bool:
+        return hash_ in self._disabled_hashes()
+
+    def set_disabled(self, hash_: str, disabled: bool) -> bool:
+        self.validate_hash(hash_)
+        hashes = self._disabled_hashes()
+        before = hash_ in hashes
+        hashes.add(hash_) if disabled else hashes.discard(hash_)
+        if (hash_ in hashes) != before:
+            self.root.mkdir(parents=True, exist_ok=True)
+            tmp = self.disabled_path.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps({"disabled": sorted(hashes)}, indent=2) + "\n", encoding="utf-8")
+            tmp.replace(self.disabled_path)
+        return hash_ in hashes
+
+    def extension_entries(self) -> list[dict]:
+        out = []
+        for hash_, mapping in self.mappings().items():
+            if self.locate_representation(hash_) is None:
+                continue
+            source_ref = mapping.source_ref
+            if source_ref.startswith(("http://", "https://")):
+                parsed = urllib.parse.urlparse(source_ref)
+                out.append({"kind": "url", "host": parsed.netloc.lower(), "path": parsed.path,
+                            "hash": hash_, "disabled": self.is_disabled(hash_)})
+            elif source_ref.startswith("/"):
+                out.append({"kind": "file", "path": source_ref, "hash": hash_,
+                            "disabled": self.is_disabled(hash_)})
+        return out
+
+    @staticmethod
+    def _search_text(name: str, source_ref: Optional[str]) -> str:
+        parts = [name]
+        if source_ref:
+            parsed = urllib.parse.urlparse(source_ref)
+            if parsed.scheme in {"http", "https"}:
+                parts += [parsed.netloc, parsed.path, pathlib.PurePosixPath(parsed.path).name]
+            else:
+                path = pathlib.Path(source_ref)
+                parts += [source_ref, path.name, str(path.parent)]
+        text = urllib.parse.unquote(" ".join(parts))
+        return re.sub(r"\s+", " ", text.casefold()).strip()
+
+    def list_entries(self) -> list[dict]:
+        scores = self.activity.all_frecency()
+        out = []
+        for hash_, mapping in self.mappings().items():
+            representation = self.locate_representation(hash_, prefer_light=True)
+            if representation is None:
+                continue
+            score = scores.get(hash_, {"raw_count": 0, "rank": 0, "last_seen": None,
+                                       "age_multiplier": 0.0, "frecency_score": 0.0})
+            canonical = representation.canonical
+            out.append({"hash": hash_, "name": canonical.stem, "source_ref": mapping.source_ref,
+                        "search_text": self._search_text(canonical.stem, mapping.source_ref),
+                        "href": f"/{hash_}/{representation.selected.name}",
+                        "canonical_href": f"/{hash_}/{canonical.name}",
+                        "light_href": f"/{hash_}/{representation.light.name}" if representation.light else None,
+                        "count": score["raw_count"], "rank": score["rank"],
+                        "last_seen": score["last_seen"], "age_multiplier": score["age_multiplier"],
+                        "frecency_score": score["frecency_score"]})
+        out.sort(key=lambda entry: (-entry["frecency_score"], -(entry["last_seen"] or 0), entry["name"].lower()))
+        return out
+
+    def search_entries(self, query: str) -> list[dict]:
+        needle = self._search_text(query, None)
+        return [entry for entry in self.list_entries() if needle in entry["search_text"]]
+
+    @staticmethod
+    def _sanitize_name(raw: str) -> str:
+        value = (raw or "").strip()
+        if value.lower().endswith(".html"):
+            value = value[:-5].rstrip()
+        return re.sub(r"[\x00-\x1f/\\]+", "-", value).lstrip(".").strip()[:NAME_MAX_LEN]
+
+    def rename(self, hash_: str, raw_name: str) -> dict:
+        representation = self.require_representation(hash_, prefer_light=False)
+        name = self._sanitize_name(raw_name)
+        if not name:
+            raise InvalidCatalogInput("name is empty after sanitization")
+        old = representation.canonical
+        if old.stem == name:
+            return self._rename_result(hash_, old.stem, name, False, representation, 0)
+        target = old.with_name(name + ".html")
+        light_target = old.with_name(name + LIGHT_HTML_SUFFIX)
+        if target.exists() or light_target.exists():
+            raise NameConflict(f"name already in use: {name}")
+
+        def rewrite_title(path: pathlib.Path) -> None:
+            try:
+                text = path.read_text(encoding="utf-8")
+                text, count = re.subn(r"<title>.*?</title>", f"<title>{html_lib.escape(name)}</title>", text, count=1, flags=re.DOTALL)
+                if count:
+                    path.write_text(text, encoding="utf-8")
+            except OSError:
+                pass
+
+        rewrite_title(old)
+        if representation.light:
+            rewrite_title(representation.light)
+            representation.light.rename(light_target)
+        old.rename(target)
+        self._rewrite_mapping_html(hash_, target)
+        updated = Representation(hash_, target, target, light_target if representation.light else None)
+        return self._rename_result(hash_, old.stem, name, True, updated, self.activity.boost(hash_, n=3))
+
+    @staticmethod
+    def _rename_result(hash_: str, old_name: str, new_name: str, renamed: bool,
+                       representation: Representation, boosted: int) -> dict:
+        result = {"hash": hash_, "old_name": old_name, "new_name": new_name, "renamed": renamed,
+                  "href": f"/{hash_}/{representation.canonical.name}",
+                  "canonical_href": f"/{hash_}/{representation.canonical.name}",
+                  "light_href": f"/{hash_}/{representation.light.name}" if representation.light else None}
+        if renamed:
+            result.update(light_renamed=representation.light is not None, frecency_boosted=boosted)
+        return result
+
+    def _rewrite_mapping_html(self, hash_: str, path: pathlib.Path) -> None:
+        if not self.mappings_path.is_file():
+            return
+        lines = []
+        with self.mappings_path.open(encoding="utf-8") as source:
+            for line in source:
+                parts = line.rstrip("\n").split("\t")
+                if len(parts) >= 4 and parts[2] == hash_:
+                    parts[3] = str(path)
+                    line = "\t".join(parts) + "\n"
+                lines.append(line if line.endswith("\n") else line + "\n")
+        self._atomic_lines(self.mappings_path, lines)
+
+    def delete(self, hash_: str) -> dict:
+        self.validate_hash(hash_)
+        source_ref = None
+        dropped = False
+        kept = []
+        if self.mappings_path.is_file():
+            with self.mappings_path.open(encoding="utf-8") as source:
+                for line in source:
+                    parts = line.rstrip("\n").split("\t")
+                    if len(parts) >= 4 and parts[2] == hash_:
+                        source_ref, dropped = strip_passthrough(parts[1]), True
+                    else:
+                        kept.append(line if line.endswith("\n") else line + "\n")
+            if dropped:
+                self._atomic_lines(self.mappings_path, kept)
+        entry_dir = self.root / hash_
+        removed = False
+        if entry_dir.is_dir():
+            resolved = entry_dir.resolve()
+            if resolved.parent != self.root.resolve():
+                raise InvalidCatalogInput("cache entry resolves outside cache root")
+            shutil.rmtree(resolved)
+            removed = not resolved.exists()
+        visits_deleted = self.activity.forget(hash_)
+        self.set_disabled(hash_, False)
+        if not (dropped or removed):
+            raise EntryNotFound(f"no cache entry for hash {hash_}")
+        return {"hash": hash_, "source_ref": source_ref, "mapping_dropped": dropped,
+                "removed_dir": removed, "visits_deleted": visits_deleted, "disabled": False}
+
+    @staticmethod
+    def _atomic_lines(path: pathlib.Path, lines: list[str]) -> None:
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text("".join(lines), encoding="utf-8")
+        tmp.replace(path)
+
+    def hash_for_browser_url(self, url: str, *, daemon_port: int = 7435) -> Optional[str]:
+        clean = strip_passthrough(url)
+        parsed = urllib.parse.urlparse(clean)
+        daemon = parsed.scheme in {"http", "https"} and parsed.hostname in {"localhost", "127.0.0.1", "::1"}
+        try:
+            daemon = daemon and parsed.port == daemon_port
+        except ValueError:
+            daemon = False
+        if daemon:
+            match = re.match(r"^/([a-f0-9]{6,32})(?:/|$)", parsed.path)
+            if match:
+                return match.group(1)
+            query = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
+            if parsed.path == "/native" and query.get("hash") and HASH_RE.fullmatch(query["hash"][0]):
+                return query["hash"][0]
+            if parsed.path in {"/view", "/view-light", "/native"}:
+                if query.get("path"):
+                    return self._hash_for_local_path(pathlib.Path(query["path"][0]))
+                if query.get("url"):
+                    return url_hash(strip_passthrough(query["url"][0]))
+            if parsed.path in {"/view-raw", "/view-light-raw"} and parsed.query:
+                return url_hash(strip_passthrough(parsed.query))
+        if parsed.scheme == "file":
+            return self._hash_for_local_path(pathlib.Path(urllib.parse.unquote(parsed.path)))
+        if parsed.scheme in {"http", "https"} and parsed.netloc:
+            return url_hash(clean)
+        return None

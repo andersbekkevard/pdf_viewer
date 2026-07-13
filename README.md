@@ -96,9 +96,9 @@ All core phases done (1 → 7). What works end-to-end today:
   `inject` re-applies the overlay to every cached HTML (seconds, no
   reconversion). `reconvert` re-runs pdf2htmlEX; for https entries reuses the
   stored `_source/*.pdf` so signed URLs don't need to be refetched.
-  `light` builds derived low-memory HTML from existing canonical HTML, but is
-  guarded behind `PDF_VIEWER_ENABLE_EXPERIMENTAL_LIGHT=1` until the open
-  resolution/search/selection bugs are fixed.
+  `light` builds paint-safe low-memory HTML from existing canonical HTML.
+  Set `PDF_VIEWER_ENABLE_LIGHT=0` to disable new light generation; the legacy
+  `PDF_VIEWER_ENABLE_EXPERIMENTAL_LIGHT` flag remains honored.
 - **Bulk indexing** — `scripts/index-directory.sh <folder>` recursively
   content-hashes every PDF and converts uncached ones. Raycast wrapper
   takes a folder argument.
@@ -106,6 +106,7 @@ All core phases done (1 → 7). What works end-to-end today:
   `GET /view?path=` / `GET /view?url=` / `GET /view-raw?<url>` /
   `GET /view-light?path=` / `GET /view-light?url=` /
   `GET /view-light-raw?<url>` / `GET /<hash>/<file>` /
+  `GET /view-canonical?path=` / `GET /view-canonical?url=` /
   `GET /_assets/*` / `GET /healthz` / `GET /stats` /
   `GET /stats/recent` / `GET /library`. Cache lookup ≈ 1–3 ms.
 - **launchd autostart** — `launchd/com.anders.pdf_viewer.plist` symlinked
@@ -118,12 +119,13 @@ All core phases done (1 → 7). What works end-to-end today:
   miss. The toolbar action toggles the current cached PDF between the
   custom viewer and the native browser PDF viewer; disabled entries install
   higher-priority allow rules instead of redirect rules.
-- **Experimental low-memory light HTML** — canonical `<stem>.html` stays in the cache as
+- **Low-memory light HTML** — canonical `<stem>.html` stays in the cache as
   the exact pdf2htmlEX output and rollback path. Normal opens prefer
-  `<stem>.light.html`, which externalizes page rasters, mounts only nearby
-  page images, and collapses the glyph-heavy text layer to one searchable
-  DOM text node per page. Generation is disabled by default until the
-  quality follow-up is fixed.
+  `<stem>.light.html`, which externalizes page rasters and mounts only nearby
+  images. Its root mode is `paint-safe`: only `.t` lines proved hidden fallback
+  text from document-local CSS are simplified and marked; visible or ambiguous
+  lines remain byte-for-byte canonical. Generation and normal routing are
+  enabled by default; `/view-canonical` is the explicit rollback route.
 - **Visit tracking** (`daemon/visits.py` + `visits.db`) — every cache hit
   logged off the response path via FastAPI `BackgroundTasks`. Powers
   `/stats`, `/stats/recent`, and the visits-sorted library picker
@@ -131,10 +133,11 @@ All core phases done (1 → 7). What works end-to-end today:
 - **Native `⌘F` full-document indexing** — `.pf` carries
   `content-visibility: auto` so off-viewport pages skip paint+layout
   but their text stays in the layout tree, where Chromium's native
-  find indexes it. In canonical HTML, matches scroll to the exact text line.
-  In light HTML, matches scroll to the owning page text node while the page
-  raster remains the visual source. See ADR 0009 and ADR 0010. Overlay `/`
-  search remains visible-page scoped.
+  find indexes it. In canonical and paint-safe light HTML, matches target the
+  retained positioned text line while the raster remains the visual source.
+  Native-find highlighting can overlap a little where fallback-font metrics
+  differ, but idle pixels remain raster-faithful. See ADR 0009 and ADR 0010.
+  Overlay `/` search remains visible-page scoped.
 
 What's not built: cross-device access over Tailscale (phase 8, optional).
 
@@ -158,7 +161,7 @@ What's not built: cross-device access over Tailscale (phase 8, optional).
 
 ```
 pdf_viewer/
-├── assets/overlay*.js           # the overlay — ES modules (entry + leaves), all UX
+├── assets/overlay*.js           # composition root + library/navigation/text/command/finger modules
 ├── assets/overlay.css           # the overlay styles
 ├── scripts/
 │   ├── pdf2html-convert.sh      # convert: single PDF (file or url)
@@ -171,7 +174,9 @@ pdf_viewer/
 │   ├── pdf-viewer-convert.sh
 │   └── pdf-viewer-index-folder.sh
 ├── daemon/                      # FastAPI read-only service (uv project)
-│   ├── main.py
+│   ├── main.py                  # thin HTTP adapter + extension signals
+│   ├── catalog.py               # cache identity, discovery, and safe mutations
+│   ├── tests/test_catalog.py    # temp-directory cache contract suite
 │   └── visits.py
 ├── extension/                   # Comet MV3 redirect extension
 │   ├── manifest.json

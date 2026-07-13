@@ -12,6 +12,23 @@ code.
 hardcoded script's `~/.cache/pdf2html-serve/`, which is preserved intact
 as an A/B reference and must not be touched.
 
+## Catalog interface
+
+`daemon/catalog.py::CacheCatalog` is the single owner of the cache's
+filesystem semantics. Its interface resolves a local path or remote URL,
+locates canonical or light representations, exposes extension and library
+entries, reconstructs native sources, and performs rename, disable, and delete
+mutations. `daemon/main.py` is the HTTP adapter at this seam: it validates
+route-specific input, translates catalog errors into HTTP responses, records
+visits, and emits extension signals.
+
+Callers must not reproduce `mappings.tsv`, `disabled.json`, representation
+fallback, or safe-mutation rules. Configure a `CacheCatalog` with a cache root
+instead; temporary-directory tests in `daemon/tests/test_catalog.py` exercise
+the interface without launching FastAPI or a browser. Conversion is
+intentionally absent from the catalog and remains in the on-demand scripts,
+preserving ADR 0004's accepted daemon/compute split.
+
 ## Layout
 
 ```
@@ -36,28 +53,34 @@ as an A/B reference and must not be touched.
 `_assets/` being a symlink back into the repo is what lets overlay edits
 go live on ⌘⇧R without reconverting anything.
 
-## Canonical vs light HTML
+## Canonical vs paint-safe light HTML
 
 The cache keeps the original pdf2htmlEX output as `<stem>.html`. That file is
 the rollback path and the exact text-layout reference. `mappings.tsv` always
 points at this canonical file.
 
-When experimental light generation is explicitly enabled, conversions can also
-build `<stem>.light.html`:
+Conversions build `<stem>.light.html` in `paint-safe` root mode by default:
 
 - full-page raster images are extracted from base64 `data:` URLs into
   `page-images/0001.png`, `0002.png`, ...
 - page `<img class="bi">` tags carry `data-pdf2html-src` and only nearby
   pages get a live `src`;
-- pdf2htmlEX's glyph-heavy text span DOM is collapsed to one transparent,
-  searchable text node per page.
+- only `.t` lines proved hidden fallback text by conservative, document-local
+  CSS visibility semantics are simplified and marked
+  `data-pdf2html-paint-safe="hidden"`; every visible or ambiguous `.t` line
+  remains byte-for-byte canonical.
 
-The daemon's `/view-light` and `/view-light-raw` routes serve the light file
-when it exists and fall back to canonical HTML when it does not. `/view` and
-`/view-raw` remain canonical routes. `scripts/upgrade-cache.sh --mode=light`
-is guarded behind `PDF_VIEWER_ENABLE_EXPERIMENTAL_LIGHT=1` until the known
-resolution/search/selection bugs are fixed; it must not be used for broad cache
-migration before that.
+The root carries `data-pdf2html-representation="light-v1"` and
+`data-pdf2html-text-mode="paint-safe"`. `geometry` and `original` are explicit
+diagnostic experiments, not production representations.
+
+The daemon's normal `/view` and `/view-raw` routes prefer the light file and
+fall back to canonical HTML when it does not exist. `/view-light` remains a
+compatibility alias. `/view-canonical` and `/view-canonical-raw` explicitly
+select canonical HTML. `scripts/upgrade-cache.sh --mode=light` builds or
+rebuilds derived artifacts from canonical HTML without changing `mappings.tsv`.
+Generation is enabled by default; `PDF_VIEWER_ENABLE_LIGHT=0` disables it, and
+the legacy `PDF_VIEWER_ENABLE_EXPERIMENTAL_LIGHT` flag remains honored.
 
 ## Hash keys
 
@@ -146,7 +169,8 @@ rg -l '"converter": "docker-amd64"' ~/.cache/pdf_viewer/*/meta.json
 
 ## Cache-miss behavior
 
-The daemon (`daemon/main.py`) is read-only and never invokes Docker
+The daemon (`daemon/main.py`, backed by `daemon/catalog.py`) never converts PDFs
+or invokes Docker
 (ADR 0004). Miss handling:
 
 - `GET /view?url=<remote>` / `GET /view-light?url=<remote>` and the
@@ -197,10 +221,11 @@ and layout but their text stays in the DOM. No per-document index file is
 generated or fetched; `text.json` files in older cache entries are
 orphaned and can be deleted at leisure.
 
-Light HTML changes the text granularity, not the browser-find mechanism:
-each page has one transparent DOM text node, so native `Cmd-F` and copy still
-operate on real DOM text while avoiding millions of pdf2htmlEX glyph spans.
-For exact line-level text boxes, use the canonical `<stem>.html` route.
+Paint-safe light HTML preserves the positioned `.t` line model and changes only
+provably hidden fallback lines, so native `Cmd-F`, drag selection, and copy
+remain line-aligned. Native-find highlighting may overlap slightly where
+fallback-font metrics differ; idle pixels remain raster-faithful. Use
+`/view-canonical` for the exact canonical text boxes.
 
 **LRU eviction is deliberately not implemented.** Add a
 `scripts/prune-cache.sh --keep N` when cache bloat actually becomes a

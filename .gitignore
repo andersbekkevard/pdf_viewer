@@ -34,3 +34,4 @@ extension/_metadata/
 tmp/
 .playwright-cli/
 .codex/
+.dev-server.md

@@ -74,7 +74,7 @@ NATIVE_DATA_DIR="$HOME/.local/opt/pdf2htmlEX/share/pdf2htmlEX"
 NATIVE_POPPLER_DATA="/opt/homebrew/share/poppler"
 INJECTOR="$REPO_DIR/scripts/inject-overlay.py"
 EXTERNALIZER="$REPO_DIR/scripts/externalize-page-images.py"
-LIGHT_VARIANTS_ENABLED="${PDF_VIEWER_ENABLE_EXPERIMENTAL_LIGHT:-0}"
+LIGHT_VARIANTS_ENABLED="${PDF_VIEWER_ENABLE_LIGHT:-${PDF_VIEWER_ENABLE_EXPERIMENTAL_LIGHT:-1}}"
 
 # Overlay asset version is a content hash derived by the injector; OVERLAY_HASH
 # is captured once below (after the asset symlink exists) and exported only for
@@ -144,6 +144,7 @@ worker() {
                                 --image-dir "$out_dir/page-images" \
                                 --url-prefix "/$hash/page-images/" \
                                 --eager 2 \
+                                --text-layer=paint-safe \
                                 --clean >>"$LOG_FILE" 2>&1; then
                             uv run "$INJECTOR" "$out_dir/$light_out_name" "${pdf_name%.*}" \
                                 >>"$LOG_FILE" 2>&1 \
@@ -153,7 +154,7 @@ worker() {
                             rm -f "$out_dir/$light_out_name"
                         fi
                     else
-                        log "[skip-light-disabled] $pdf"
+                        log "[skip-light-disabled] $pdf (PDF_VIEWER_ENABLE_LIGHT=0)"
                     fi
                     rc=0
                     did_convert=1

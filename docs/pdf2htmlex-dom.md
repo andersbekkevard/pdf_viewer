@@ -124,11 +124,13 @@ our purposes, `.t` elements are:
 - What `Selection.focusNode.parentElement` returns (usually; sometimes
   it's a nested `<span>` inside a `.t`)
 
-Light cache variants (`<stem>.light.html`) intentionally remove `.t` runs.
-They replace the glyph-heavy text layer with one transparent
-`.pdf2html-page-text` node per `.pf`, keeping native browser find/copy on
-real DOM text while avoiding millions of span nodes. Treat `.t` as the
-canonical HTML shape, not as guaranteed in every served variant.
+Production light-v1 cache variants (`<stem>.light.html`) use
+`data-pdf2html-text-mode="paint-safe"`: only `.t` lines proved hidden fallback
+text by conservative document-local CSS visibility semantics may be simplified
+and receive `data-pdf2html-paint-safe="hidden"`. Visible or ambiguous `.t`
+lines are byte-for-byte canonical. `geometry` and `original` modes are
+diagnostic experiments, not production DOM contracts; do not depend on their
+reduced shapes from overlay code.
 
 ## `.bi` — background image
 
@@ -136,7 +138,9 @@ canonical HTML shape, not as guaranteed in every served variant.
 <img class="bi x0 y0 w1 h1" src="…bg1.png" />
 ```
 
-The rendered raster of the entire page, drawn behind the text spans.
+The rendered raster of the entire page, drawn behind the text spans. In
+paint-safe light HTML it is an external `page-images/` asset, lazily mounted
+through `data-pdf2html-src`; canonical HTML retains its embedded data URI.
 `.t` elements are overlaid on top, positioned so their visible shapes
 align with the raster's glyph outlines. Essentially: visual fidelity
 comes from the raster; selectable text comes from the overlaid `.t`
