@@ -23,6 +23,7 @@
 # underlying script fails fast with an install hint if the binary is missing,
 # surfaced via macOS notification.
 
+mkdir -p "$HOME/.cache/pdf_viewer"
 nohup /Users/andersbekkevard/dev/misc/pdf_viewer/scripts/pdf2html-convert.sh "$@" \
     >>"$HOME/.cache/pdf_viewer/log" 2>&1 &
 disown
