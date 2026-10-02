@@ -1,6 +1,6 @@
 {
     "manifest_version": 3,
-    "name": "pdf_viewer",
+    "name": "Anders PDF Viewer",
     "version": "0.2.0",
     "description": "Redirect PDF URLs to the pdf_viewer daemon — static .pdf URLs + dynamic matches against the cache.",
     "permissions": [
@@ -13,7 +13,13 @@
         "file:///*"
     ],
     "action": {
-        "default_title": "Toggle pdf_viewer for this PDF"
+        "default_title": "Toggle pdf_viewer for this PDF",
+        "default_icon": {
+            "16": "icons/icon-16.png",
+            "32": "icons/icon-32.png",
+            "48": "icons/icon-48.png",
+            "128": "icons/icon-128.png"
+        }
     },
     "background": {
         "service_worker": "background.js"
@@ -26,5 +32,11 @@
                 "path": "rules.json"
             }
         ]
+    },
+    "icons": {
+        "16": "icons/icon-16.png",
+        "32": "icons/icon-32.png",
+        "48": "icons/icon-48.png",
+        "128": "icons/icon-128.png"
     }
 }
