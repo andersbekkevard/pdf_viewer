@@ -76,8 +76,13 @@ if [[ ! -L "$ASSET_LINK" ]]; then
     ln -s "$ASSET_SRC" "$ASSET_LINK" || fail "Could not link assets dir"
 fi
 
-# Get active tab URL from Comet
-TAB_URL=$(osascript -e 'tell application "Comet" to return URL of active tab of front window' 2>/dev/null)
+# Get active tab URL from Google Chrome. Addressed by bundle id: the name
+# "Google Chrome" can resolve to Playwright's "Google Chrome for Testing".
+# Checked first because telling a closed app to answer launches it.
+CHROME_RUNNING=$(osascript -e 'application id "com.google.Chrome" is running' 2>/dev/null)
+[[ "$CHROME_RUNNING" == "true" ]] || fail "Google Chrome is not running"
+TAB_URL=$(osascript -e 'tell application id "com.google.Chrome" to return URL of active tab of front window' 2>/dev/null)
+[[ -n "$TAB_URL" ]] || fail "No Chrome window with an active tab"
 
 # -----------------------------------------------------------------------------
 # Scheme dispatch. file:// and http(s):// both end up with:

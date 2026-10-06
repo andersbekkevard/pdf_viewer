@@ -254,6 +254,12 @@ const NAV_POLL_TIMEOUT_SEC = 25;
 const NAV_POLL_ERROR_BACKOFF_MS = 2000;
 
 let _navPollRunning = false;
+// Highest signal id seen. The daemon keeps signals for 60 s and gives every
+// poller those newer than its cursor, so another browser or profile running
+// this extension cannot take a signal meant for a tab here. After a service
+// worker restart the cursor is 0 again: recent signals come back, which is
+// harmless (a navigated tab no longer has the from_url; a rule sync repeats).
+let _navCursor = 0;
 
 async function navigateTab({ from_url, to_url }) {
     try {
@@ -294,7 +300,7 @@ async function startNavPollLoop() {
         while (true) {
             try {
                 const resp = await fetch(
-                    `${DAEMON}/signal/navigate/wait?timeout=${NAV_POLL_TIMEOUT_SEC}`,
+                    `${DAEMON}/signal/navigate/wait?timeout=${NAV_POLL_TIMEOUT_SEC}&since=${_navCursor}`,
                     { cache: 'no-store' }
                 );
                 if (!resp.ok) {
@@ -306,6 +312,7 @@ async function startNavPollLoop() {
                 }
                 const signals = await resp.json();
                 for (const sig of signals) {
+                    if (typeof sig.id === 'number' && sig.id > _navCursor) _navCursor = sig.id;
                     await handleDaemonSignal(sig);
                 }
             } catch (e) {

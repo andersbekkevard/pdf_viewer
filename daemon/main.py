@@ -119,6 +119,26 @@ def _nav_event() -> asyncio.Event:
     return _nav_signal_event
 
 
+def _wake_nav_waiters() -> None:
+    # Set the current event and start a fresh one: every waiter holding the
+    # old event wakes, and no waiter can clear it for the others.
+    global _nav_signal_event
+    _nav_event().set()
+    _nav_signal_event = asyncio.Event()
+
+
+_last_nav_signal_id = 0
+
+
+def _next_nav_signal_id() -> int:
+    # Microsecond timestamps, strictly increasing: a poller's cursor stays
+    # meaningful across daemon restarts, and the values stay below 2**53, so
+    # the extension's JavaScript numbers hold them exactly.
+    global _last_nav_signal_id
+    _last_nav_signal_id = max(time.time_ns() // 1000, _last_nav_signal_id + 1)
+    return _last_nav_signal_id
+
+
 def _purge_expired_nav_signals() -> None:
     cutoff = time.time() - _NAV_SIGNAL_TTL_SEC
     _pending_nav_signals[:] = [
@@ -130,11 +150,12 @@ def _queue_extension_sync_signal(hash_: str, reason: str) -> None:
     _purge_expired_nav_signals()
     _pending_nav_signals.append({
         "type": "sync_rules",
+        "id": _next_nav_signal_id(),
         "hash": hash_,
         "reason": reason,
         "created_at": time.time(),
     })
-    _nav_event().set()
+    _wake_nav_waiters()
 
 
 class NavigateSignal(BaseModel):
@@ -146,11 +167,12 @@ def _queue_navigate_signal(from_url: str, to_url: str) -> None:
     _purge_expired_nav_signals()
     _pending_nav_signals.append({
         "type": "navigate",
+        "id": _next_nav_signal_id(),
         "from_url": from_url,
         "to_url": to_url,
         "created_at": time.time(),
     })
-    _nav_event().set()
+    _wake_nav_waiters()
 
 
 @app.post("/signal/navigate")
@@ -159,20 +181,46 @@ async def signal_navigate(sig: NavigateSignal):
     return {"queued": True, "pending": len(_pending_nav_signals)}
 
 
+def _public_signal(signal: dict) -> dict:
+    return {k: v for k, v in signal.items() if k != "legacy_taken"}
+
+
 @app.get("/signal/navigate/wait")
-async def signal_navigate_wait(timeout: float = Query(25.0, ge=0.0, le=60.0)):
-    _purge_expired_nav_signals()
-    if not _pending_nav_signals:
-        ev = _nav_event()
+async def signal_navigate_wait(
+    timeout: float = Query(25.0, ge=0.0, le=60.0),
+    since: int | None = Query(None, ge=0),
+):
+    """Long-poll for signals.
+
+    With `since` (the highest signal id the poller has seen; 0 at start), every
+    unexpired signal newer than it is returned and nothing is consumed, so
+    every listening browser or profile gets each signal and acts only on its
+    own tabs. Without `since` (older extension builds), each signal goes to the
+    first such poller only, as before, while cursor pollers still receive it.
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while True:
+        _purge_expired_nav_signals()
+        if since is None:
+            # Consumed for other cursor-less pollers only: marked, not
+            # removed, so cursor pollers still receive it.
+            out = [s for s in _pending_nav_signals if not s.get("legacy_taken")]
+            if out:
+                for s in out:
+                    s["legacy_taken"] = True
+                return [_public_signal(s) for s in out]
+        else:
+            out = [s for s in _pending_nav_signals if s["id"] > since]
+            if out:
+                return [_public_signal(s) for s in out]
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            return []
         try:
-            await asyncio.wait_for(ev.wait(), timeout=timeout)
+            await asyncio.wait_for(_nav_event().wait(), timeout=remaining)
         except asyncio.TimeoutError:
             return []
-        ev.clear()
-    _purge_expired_nav_signals()
-    out = list(_pending_nav_signals)
-    _pending_nav_signals.clear()
-    return out
 
 
 @app.get("/healthz")

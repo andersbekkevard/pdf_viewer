@@ -7,7 +7,7 @@
 
 # Optional parameters:
 # @raycast.icon 📑
-# @raycast.description Convert active Comet PDF tab to localhost HTML (pdf_viewer pipeline, served overlay)
+# @raycast.description Convert active Chrome PDF tab to localhost HTML (pdf_viewer pipeline, served overlay)
 
 # Thin entrypoint — all real logic lives in pdf_viewer/scripts/ so it can be
 # edited/tested outside of Raycast's conventions.
