@@ -244,3 +244,16 @@ problem. Scary work belongs in Raycast scripts, not the daemon
 The daemon memoizes content-hash lookups by `(path, mtime_ns, size)`,
 so repeat requests on a 40 MB textbook re-hash exactly once per daemon
 process lifetime.
+
+## Prepared light runtime assets
+
+The shared light-generation pipeline runs `scripts/prepare-light-runtime.py`
+after raster externalization and before overlay injection. Supported embedded
+font binaries become content-addressed `page-fonts/<sha256>.<extension>` files,
+with unchanged font-family and format descriptors. The browser requests fonts
+when their retained text is laid out. Declared page dimensions enable the
+adapter's initialization before the converter's DOMContentLoaded listener.
+The source canonical HTML and its visible text markup are preserved.
+
+Regenerate an affected entry's light artifact to obtain this metadata; older
+artifacts remain compatible through the converter's original initialization.

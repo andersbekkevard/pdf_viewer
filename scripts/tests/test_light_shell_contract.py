@@ -8,20 +8,34 @@ import unittest
 
 
 ROOT = pathlib.Path(__file__).parents[2]
-SCRIPTS = (
+# The shared pipeline owns the light-generation contract; every producer
+# script must go through it rather than calling the toolchain itself.
+PIPELINE = ROOT / "scripts" / "lib" / "pipeline.sh"
+PRODUCERS = (
     ROOT / "scripts" / "pdf2html-convert.sh",
-    ROOT / "scripts" / "index-directory.sh",
     ROOT / "scripts" / "index-directory-parallel.sh",
     ROOT / "scripts" / "upgrade-cache.sh",
 )
+SCRIPTS = (PIPELINE,) + PRODUCERS + (ROOT / "scripts" / "index-directory.sh",)
 
 
 class LightShellContractTests(unittest.TestCase):
     def test_light_generation_defaults_on_with_new_flag_over_legacy_compatibility_flag(self) -> None:
         expected = 'LIGHT_VARIANTS_ENABLED="${PDF_VIEWER_ENABLE_LIGHT:-${PDF_VIEWER_ENABLE_EXPERIMENTAL_LIGHT:-1}}"'
-        for script in SCRIPTS:
+        self.assertIn(expected, PIPELINE.read_text(encoding="utf-8"))
+
+    def test_producers_build_entries_through_the_shared_pipeline(self) -> None:
+        for script in PRODUCERS:
+            source = script.read_text(encoding="utf-8")
             with self.subTest(script=script.name):
-                self.assertIn(expected, script.read_text(encoding="utf-8"))
+                self.assertIn('/lib/pipeline.sh"', source)
+                self.assertNotIn('"$EXTERNALIZER"', source)
+                self.assertNotIn('"$NATIVE_BIN" --data-dir', source)
+                self.assertNotIn("LIGHT_VARIANTS_ENABLED=", source)
+
+    def test_serial_indexer_is_the_parallel_indexer_with_one_worker(self) -> None:
+        source = (ROOT / "scripts" / "index-directory.sh").read_text(encoding="utf-8")
+        self.assertIn('index-directory-parallel.sh" "${1:-}" 1', source)
 
     def test_new_flag_can_disable_default_and_overrides_legacy_flag(self) -> None:
         assignment = 'LIGHT_VARIANTS_ENABLED="${PDF_VIEWER_ENABLE_LIGHT:-${PDF_VIEWER_ENABLE_EXPERIMENTAL_LIGHT:-1}}"'
@@ -48,7 +62,7 @@ class LightShellContractTests(unittest.TestCase):
                 self.assertEqual(expected, completed.stdout)
 
     def test_every_production_externalizer_call_selects_paint_safe_text(self) -> None:
-        for script in SCRIPTS:
+        for script in (PIPELINE,):
             lines = script.read_text(encoding="utf-8").splitlines()
             call_lines = [index for index, line in enumerate(lines) if 'uv run "$EXTERNALIZER"' in line]
             self.assertTrue(call_lines, f"{script.name} has no externalizer call")

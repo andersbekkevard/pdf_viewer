@@ -1,39 +1,36 @@
 #!/bin/bash
 
 # ============================================================================
-# pdf_viewer — parallel bulk directory indexer.
+# pdf_viewer — bulk directory indexer.
 #
 # Usage: index-directory-parallel.sh <folder> [jobs]
-#   jobs: number of concurrent conversions (default 2). Each worker invokes
-#         the native pdf2htmlEX binary directly.
+#   jobs: number of concurrent conversions (default 2).
 #
-# Same contract as scripts/index-directory.sh (idempotent, content-hash cache),
-# but runs conversions concurrently via xargs -P.
+# Recursively finds every *.pdf under <folder> (via fd) and builds a cache
+# entry for each, keyed by content hash. Idempotent: entries that already
+# have HTML are only refreshed (mapping row, metadata, thumbnails), so a
+# second run on the same folder converts nothing. index-directory.sh is the
+# same indexer with one worker.
 #
 # Concurrency model:
-#   - Each PDF is processed independently by a worker.
+#   - Each PDF is processed independently by a worker (xargs -P).
 #   - Atomic claim via `mkdir "$out_dir/.converting"` prevents two workers from
-#     racing on the same content hash (rare: only when the same PDF content
-#     appears twice under different filenames).
-#   - Mapping-file rewrites are serialized via an mkdir-based mutex.
+#     racing on the same content hash (the same PDF under two filenames).
+#   - mappings.tsv rewrites are serialized by the pipeline's mapping lock.
 #   - Stale `.converting` dirs from killed runs are purged at startup.
 #
-# Job-count default: the old Docker default was 4 because each conversion ran
-# single-threaded inside its container, so saturating cores meant many
-# containers. The native arm64 binary parallelizes internally (~6 threads per
-# conversion), so the old 4 would oversubscribe badly. Default 2 keeps total
-# in-flight threads (~2×6) near a typical Apple Silicon core count while still
-# overlapping I/O-bound phases (hashing, injection, meta) across workers.
+# Job-count default: the native arm64 binary parallelizes internally (~6
+# threads per conversion), so 2 workers keep total in-flight threads near a
+# typical Apple Silicon core count while overlapping I/O-bound phases
+# (hashing, injection, meta, thumbnails).
 #
 # Requires the native pdf2htmlEX binary (install-native-pdf2htmlex.sh).
-# Fails fast otherwise.
 # ============================================================================
 
 set -u
 
-# Defined early so validation failures below can surface via macOS
-# notification. Raycast silent mode doesn't display stderr, and without
-# this the script dies invisibly when given a bad path.
+# Defined before validation so failures surface as macOS notifications:
+# Raycast silent mode doesn't display stderr.
 notify() { osascript -e "display notification \"$1\" with title \"pdf_viewer\"" >/dev/null 2>&1; }
 
 DIR_ARG="${1:-}"
@@ -50,6 +47,7 @@ if ! [[ "$JOBS" =~ ^[0-9]+$ ]] || [[ "$JOBS" -lt 1 ]]; then
     exit 2
 fi
 
+# Expand leading ~ — Raycast passes the literal string, no shell expansion.
 DIR="${DIR_ARG/#\~/$HOME}"
 if [[ ! -d "$DIR" ]]; then
     notify "Folder not found: $DIR_ARG"
@@ -57,175 +55,91 @@ if [[ ! -d "$DIR" ]]; then
     exit 1
 fi
 
-REPO_DIR="/Users/andersbekkevard/dev/misc/pdf_viewer"
-ASSET_SRC="$REPO_DIR/assets"
-CACHE_DIR="$HOME/.cache/pdf_viewer"
-LOG_FILE="$CACHE_DIR/log"
-MAP_FILE="$CACHE_DIR/mappings.tsv"
-MAP_LOCK="$CACHE_DIR/.maplock"
-ASSET_LINK="$CACHE_DIR/_assets"
-# Native arm64 pdf2htmlEX (replaces the old amd64 Docker image). --data-dir
-# is passed explicitly on every invocation; the binary's baked default is
-# fragile.
-NATIVE_BIN="$HOME/.local/opt/pdf2htmlEX/bin/pdf2htmlEX"
-NATIVE_DATA_DIR="$HOME/.local/opt/pdf2htmlEX/share/pdf2htmlEX"
-# Baked poppler-data default is a version-pinned Cellar path that breaks on
-# brew upgrade; pass the stable symlink explicitly (needed for CJK/CID PDFs).
-NATIVE_POPPLER_DATA="/opt/homebrew/share/poppler"
-INJECTOR="$REPO_DIR/scripts/inject-overlay.py"
-EXTERNALIZER="$REPO_DIR/scripts/externalize-page-images.py"
-LIGHT_VARIANTS_ENABLED="${PDF_VIEWER_ENABLE_LIGHT:-${PDF_VIEWER_ENABLE_EXPERIMENTAL_LIGHT:-1}}"
+# shellcheck source=lib/pipeline.sh
+source "$(cd "$(dirname "$0")" && pwd)/lib/pipeline.sh"
 
-# Overlay asset version is a content hash derived by the injector; OVERLAY_HASH
-# is captured once below (after the asset symlink exists) and exported only for
-# the provenance writer. The injector itself derives the same hash per call.
-export REPO_DIR CACHE_DIR LOG_FILE MAP_FILE MAP_LOCK ASSET_LINK NATIVE_BIN NATIVE_DATA_DIR NATIVE_POPPLER_DATA INJECTOR EXTERNALIZER LIGHT_VARIANTS_ENABLED
-
-mkdir -p "$CACHE_DIR"
-
-log() { printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >> "$LOG_FILE"; }
 say() { printf '%s\n' "$*"; log "$*"; }
 die() { printf 'error: %s\n' "$*" >&2; log "FAIL: $*"; exit 1; }
 
-export -f log
-
-if [[ ! -L "$ASSET_LINK" ]]; then
-    rm -rf "$ASSET_LINK" 2>/dev/null
-    ln -s "$ASSET_SRC" "$ASSET_LINK" || die "could not link assets dir"
-fi
-
-OVERLAY_HASH="$(uv run "$INJECTOR" --print-version)"
-export OVERLAY_HASH
-
+ensure_asset_link || die "could not link assets dir"
 FD=$(command -v fd || command -v fdfind || true)
 [[ -n "$FD" ]] || die "fd not found — install via 'brew install fd'"
-
-if [[ ! -x "$NATIVE_BIN" ]]; then
+if ! native_ready; then
     notify "native pdf2htmlEX not installed"
     die "native pdf2htmlEX not installed — run scripts/install-native-pdf2htmlex.sh"
 fi
 
+# Resolve the overlay version once for every worker's provenance write.
+PIPELINE_OVERLAY_VERSION="$(uv run "$INJECTOR" --print-version)"
+# Each worker appends one outcome word per PDF; the summary counts them.
+RUN_STATUS="$(mktemp -t pdfviewer-index)"
+trap 'rm -f "$RUN_STATUS"' EXIT
+export PIPELINE_OVERLAY_VERSION RUN_STATUS
+
 # Purge stale .converting claim dirs left behind by killed runs (>30 min old).
 find "$CACHE_DIR" -maxdepth 2 -type d -name .converting -mmin +30 -exec rmdir {} + 2>/dev/null
-rmdir "$MAP_LOCK" 2>/dev/null  # clear stale map lock too
 
 # ---------------------------------------------------------------------------
-# Worker — converts a single PDF. Invoked by xargs -P.
+# Worker — one PDF. Runs in a fresh bash per xargs slot, so it re-sources
+# the pipeline.
 # ---------------------------------------------------------------------------
 worker() {
-    local pdf="$1"
-    local pdf_name hash out_dir existing_html out_name rc did_convert=0
+    # shellcheck source=lib/pipeline.sh
+    source "$PIPELINE_SH"
+    local pdf="$1" outcome="skipped"
+    [[ -f "$pdf" ]] || { log "[miss] $pdf"; echo missing >> "$RUN_STATUS"; return 0; }
 
-    [[ -f "$pdf" ]] || { log "[miss] $pdf"; return 0; }
-
+    local pdf_name hash out_dir html title
     pdf_name=$(basename "$pdf")
-    hash=$(shasum -a 256 "$pdf" | awk '{print $1}' | head -c 16)
+    title="${pdf_name%.*}"
+    hash=$(content_hash "$pdf")
     out_dir="$CACHE_DIR/$hash"
     mkdir -p "$out_dir"
 
-    existing_html=$(find "$out_dir" -maxdepth 1 -type f -name '*.html' ! -name '*.light.html' | sort | head -1)
-
-    if [[ -z "$existing_html" ]]; then
-        # Attempt atomic claim on this hash. If another worker already owns
-        # it, wait for them to finish and then treat as cache hit.
+    html=$(canonical_html "$out_dir")
+    if [[ -z "$html" ]]; then
         if mkdir "$out_dir/.converting" 2>/dev/null; then
-            out_name="${pdf_name%.*}.html"
             log "[convert] $pdf"
-
-            if "$NATIVE_BIN" --data-dir "$NATIVE_DATA_DIR" \
-                    --poppler-data-dir "$NATIVE_POPPLER_DATA" --dest-dir "$out_dir" \
-                    "$pdf" >>"$LOG_FILE" 2>&1; then
-                if uv run "$INJECTOR" "$out_dir/$out_name" "${pdf_name%.*}" \
-                        >>"$LOG_FILE" 2>&1; then
-                    if [[ "$LIGHT_VARIANTS_ENABLED" == "1" ]]; then
-                        local light_out_name="${out_name%.html}.light.html"
-                        if uv run "$EXTERNALIZER" \
-                                "$out_dir/$out_name" "$out_dir/$light_out_name" \
-                                --image-dir "$out_dir/page-images" \
-                                --url-prefix "/$hash/page-images/" \
-                                --eager 2 \
-                                --text-layer=paint-safe \
-                                --clean >>"$LOG_FILE" 2>&1; then
-                            uv run "$INJECTOR" "$out_dir/$light_out_name" "${pdf_name%.*}" \
-                                >>"$LOG_FILE" 2>&1 \
-                                || log "[fail-light-inject] $pdf"
-                        else
-                            log "[fail-light] $pdf"
-                            rm -f "$out_dir/$light_out_name"
-                        fi
-                    else
-                        log "[skip-light-disabled] $pdf (PDF_VIEWER_ENABLE_LIGHT=0)"
-                    fi
-                    rc=0
-                    did_convert=1
-                else
-                    log "[fail-inject] $pdf"
-                    rc=1
-                fi
-            else
+            outcome="converted"
+            if ! native_convert "$pdf" "$out_dir"; then
                 log "[fail-pdf2htmlex] $pdf"
-                rc=1
+                outcome="failed"
+            elif ! build_entry "$out_dir" "$title.html" "$hash" "$title"; then
+                log "[fail-inject] $pdf"
+                outcome="failed"
+            else
+                write_provenance "$out_dir" || log "[fail-provenance] $pdf"
             fi
-
             rmdir "$out_dir/.converting" 2>/dev/null
-            [[ $rc -ne 0 ]] && return 1
         else
-            # Another worker owns the conversion — wait up to 15 min for it.
+            # Another worker owns this hash — wait up to 15 min for it.
             local waited=0
             while [[ -d "$out_dir/.converting" ]] && [[ $waited -lt 4500 ]]; do
                 sleep 0.2
                 waited=$((waited + 1))
             done
-            existing_html=$(find "$out_dir" -maxdepth 1 -type f -name '*.html' ! -name '*.light.html' | sort | head -1)
-            if [[ -z "$existing_html" ]]; then
-                log "[fail-peer] $pdf (peer worker did not complete)"
-                return 1
-            fi
             log "[skip-peer] $pdf"
+        fi
+        html=$(canonical_html "$out_dir")
+        if [[ -z "$html" ]]; then
+            [[ "$outcome" == "failed" ]] || log "[fail-peer] $pdf (no HTML after conversion)"
+            echo failed >> "$RUN_STATUS"
+            return 1
         fi
     else
         log "[skip-cached] $pdf"
     fi
 
-    # Conversion provenance — pipeline-owned, only on a real conversion.
-    # Merges into meta.json; versions parsed from the binary.
-    if [[ "$did_convert" == "1" ]]; then
-        python3 "$REPO_DIR/scripts/write-provenance.py" "$out_dir/meta.json" \
-            --converter native-arm64 --bin "$NATIVE_BIN" \
-            --overlay-version "$OVERLAY_HASH" \
-            >>"$LOG_FILE" 2>&1 || log "[fail-provenance] $pdf"
-    fi
-
-    # Metadata — non-fatal. Gate on pdfinfo keys, not file existence — a
-    # provenance-only meta.json may have just been created above.
-    if ! python3 -c "import json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if any(k in d for k in ('pages','title','author','file_size')) else 1)" "$out_dir/meta.json" 2>/dev/null; then
-        "$REPO_DIR/scripts/extract-pdf-meta.sh" "$pdf" "$out_dir/meta.json" \
-            >>"$LOG_FILE" 2>&1 || log "[fail-meta] $pdf"
-    fi
-
-    # Upsert mapping under mutex. Busy-wait on mkdir — critical section is <50ms.
-    local waited=0
-    while ! mkdir "$MAP_LOCK" 2>/dev/null; do
-        sleep 0.02
-        waited=$((waited + 1))
-        [[ $waited -gt 15000 ]] && { log "[fail-lock] $pdf"; return 1; }
-    done
-    {
-        local final_html
-        final_html=$(find "$out_dir" -maxdepth 1 -type f -name '*.html' ! -name '*.light.html' | sort | head -1)
-        if [[ -n "$final_html" ]]; then
-            if [[ -f "$MAP_FILE" ]]; then
-                awk -F'\t' -v h="$hash" '$3 != h' "$MAP_FILE"
-            fi
-            printf '%s\t%s\t%s\t%s\n' "$(date -Iseconds)" "$pdf" "$hash" "$final_html"
-        elif [[ -f "$MAP_FILE" ]]; then
-            cat "$MAP_FILE"
-        fi
-    } > "$MAP_FILE.tmp.$$" && mv "$MAP_FILE.tmp.$$" "$MAP_FILE"
-    rmdir "$MAP_LOCK" 2>/dev/null
-
+    # Non-critical extras, also backfilled for entries converted earlier.
+    ensure_meta "$pdf" "$out_dir" || log "[fail-meta] $pdf"
+    ensure_thumbs "$pdf" "$out_dir" || log "[fail-thumbs] $pdf"
+    # Refreshed for cache hits too, so a moved PDF updates its source row.
+    upsert_mapping "$pdf" "$hash" "$html" || { echo failed >> "$RUN_STATUS"; return 1; }
+    echo "$outcome" >> "$RUN_STATUS"
     return 0
 }
+PIPELINE_SH="$PIPELINE_DIR/pipeline.sh"
+export PIPELINE_SH
 export -f worker
 
 # ---------------------------------------------------------------------------
@@ -238,23 +152,17 @@ if [[ "$total" -eq 0 ]]; then
 fi
 
 say "index: $total PDFs under $DIR (jobs=$JOBS)"
-notify "Indexing $total PDFs with $JOBS workers…"
-
+notify "Indexing $total PDFs…"
 start_ts=$(date +%s)
 
 "$FD" -t f -e pdf -e PDF . "$DIR" -0 2>/dev/null \
     | xargs -0 -P "$JOBS" -n 1 -I{} bash -c 'worker "$@"' _ {}
-rc=$?
 
-elapsed=$(( $(date +%s) - start_ts ))
-
-# Post-hoc summary by scanning the log tail. Counts match serial script's
-# {converted, skipped, failed} semantics.
-summary_converted=$(grep -c "^\[.*\] \[convert\] " "$LOG_FILE" 2>/dev/null || echo 0)
-summary_skipped=$(grep -c "^\[.*\] \[skip-" "$LOG_FILE" 2>/dev/null || echo 0)
-summary_failed=$(grep -c "^\[.*\] \[fail-" "$LOG_FILE" 2>/dev/null || echo 0)
-
-summary="index done in $DIR: ${elapsed}s, xargs rc=$rc (see log for per-PDF detail)"
+count() { grep -cx "$1" "$RUN_STATUS" 2>/dev/null || true; }
+converted=$(count converted)
+skipped=$(count skipped)
+failed=$(count failed)
+summary="index done in $DIR: $converted converted, $skipped skipped, $failed failed ($(( $(date +%s) - start_ts ))s)"
 say "$summary"
 notify "$summary"
-exit $rc
+exit $(( failed > 0 ? 1 : 0 ))

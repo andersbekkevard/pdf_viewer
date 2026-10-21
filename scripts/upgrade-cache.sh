@@ -43,26 +43,9 @@
 
 set -u
 
-PORT=7435
-REPO_DIR="/Users/andersbekkevard/dev/misc/pdf_viewer"
-CACHE_DIR="$HOME/.cache/pdf_viewer"
-LOG_FILE="$CACHE_DIR/log"
-MAP_FILE="$CACHE_DIR/mappings.tsv"
-# Native arm64 pdf2htmlEX (replaces the old amd64 Docker image). --data-dir
-# is passed explicitly on every invocation; the binary's baked default is
-# fragile.
-NATIVE_BIN="$HOME/.local/opt/pdf2htmlEX/bin/pdf2htmlEX"
-NATIVE_DATA_DIR="$HOME/.local/opt/pdf2htmlEX/share/pdf2htmlEX"
-# Baked poppler-data default is a version-pinned Cellar path that breaks on
-# brew upgrade; pass the stable symlink explicitly (needed for CJK/CID PDFs).
-NATIVE_POPPLER_DATA="/opt/homebrew/share/poppler"
-INJECTOR="$REPO_DIR/scripts/inject-overlay.py"
-EXTERNALIZER="$REPO_DIR/scripts/externalize-page-images.py"
-LIGHT_VARIANTS_ENABLED="${PDF_VIEWER_ENABLE_LIGHT:-${PDF_VIEWER_ENABLE_EXPERIMENTAL_LIGHT:-1}}"
+# shellcheck source=lib/pipeline.sh
+source "$(cd "$(dirname "$0")" && pwd)/lib/pipeline.sh"
 
-mkdir -p "$CACHE_DIR"
-
-log() { printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >> "$LOG_FILE"; }
 say() { printf '%s\n' "$*"; log "$*"; }
 die() { printf 'error: %s\n' "$*" >&2; log "FAIL: $*"; exit 1; }
 
@@ -114,8 +97,7 @@ if [[ "$MODE" == "inject" ]]; then
 
         stem=$(basename "$html" .html)
         stem="${stem%.light}"
-        if uv run "$INJECTOR" "$html" "$stem" \
-                >>"$LOG_FILE" 2>&1; then
+        if inject_overlay "$html" "$stem"; then
             updated=$((updated + 1))
         else
             log "inject failed: $html"
@@ -134,8 +116,7 @@ fi
 if [[ "$MODE" == "reconvert" ]]; then
     [[ -f "$MAP_FILE" ]] || die "mappings.tsv not found — nothing to reconvert"
 
-    [[ -x "$NATIVE_BIN" ]] || \
-        die "native pdf2htmlEX not installed — run scripts/install-native-pdf2htmlex.sh"
+    native_ready || die "native pdf2htmlEX not installed — run scripts/install-native-pdf2htmlex.sh"
 
     ok=0
     skipped=0
@@ -157,26 +138,13 @@ if [[ "$MODE" == "reconvert" ]]; then
             continue
         fi
 
-        # Resolve mount source + PDF name by source scheme
-        if [[ "$source_ref" =~ ^https?:// ]]; then
-            pdf_dir="$out_dir/_source"
-            existing_pdf=$(ls "$pdf_dir"/*.pdf 2>/dev/null | head -1)
-            if [[ -z "$existing_pdf" ]]; then
-                log "reconvert [$idx/$total] skip (no cached source PDF): $source_ref"
-                skipped=$((skipped + 1))
-                continue
-            fi
-            pdf_name=$(basename "$existing_pdf")
-        else
-            if [[ ! -f "$source_ref" ]]; then
-                log "reconvert [$idx/$total] skip (source missing): $source_ref"
-                skipped=$((skipped + 1))
-                continue
-            fi
-            pdf_dir=$(dirname "$source_ref")
-            pdf_name=$(basename "$source_ref")
+        pdf_path=$(entry_source_pdf "$source_ref" "$out_dir")
+        if [[ -z "$pdf_path" ]]; then
+            log "reconvert [$idx/$total] skip (source PDF missing): $source_ref"
+            skipped=$((skipped + 1))
+            continue
         fi
-
+        pdf_name=$(basename "$pdf_path")
         out_name="${pdf_name%.*}.html"
         say "reconvert [$idx/$total]: $source_ref"
 
@@ -185,50 +153,18 @@ if [[ "$MODE" == "reconvert" ]]; then
         find "$out_dir" -maxdepth 1 -mindepth 1 ! -name '_source' \
             -exec rm -rf {} + 2>>"$LOG_FILE"
 
-        if "$NATIVE_BIN" --data-dir "$NATIVE_DATA_DIR" \
-                --poppler-data-dir "$NATIVE_POPPLER_DATA" --dest-dir "$out_dir" \
-                "$pdf_dir/$pdf_name" >>"$LOG_FILE" 2>&1; then
-
-            if uv run "$INJECTOR" "$out_dir/$out_name" "${pdf_name%.*}" \
-                    >>"$LOG_FILE" 2>&1; then
-                if [[ "$LIGHT_VARIANTS_ENABLED" == "1" ]]; then
-                    light_out_name="${out_name%.html}.light.html"
-                    if uv run "$EXTERNALIZER" \
-                            "$out_dir/$out_name" "$out_dir/$light_out_name" \
-                            --image-dir "$out_dir/page-images" \
-                            --url-prefix "/$hash/page-images/" \
-                            --eager 2 \
-                            --text-layer=paint-safe \
-                            --clean >>"$LOG_FILE" 2>&1; then
-                        uv run "$INJECTOR" "$out_dir/$light_out_name" "${pdf_name%.*}" \
-                            >>"$LOG_FILE" 2>&1 \
-                            || log "reconvert [$idx/$total] light inject FAILED: $out_dir/$light_out_name"
-                    else
-                        log "reconvert [$idx/$total] light FAILED: $source_ref"
-                        rm -f "$out_dir/$light_out_name"
-                    fi
-                else
-                    log "reconvert [$idx/$total] light variant disabled by PDF_VIEWER_ENABLE_LIGHT=0"
-                fi
-                # Conversion provenance — pipeline-owned. The dir was wiped
-                # above, so this creates a fresh provenance-only meta.json;
-                # --mode=meta (or the next live convert) will merge pdfinfo
-                # fields in alongside it. Versions parsed from the binary so
-                # this stays accurate across toolchain upgrades.
-                OVERLAY_HASH="$(uv run "$INJECTOR" --print-version)"
-                python3 "$REPO_DIR/scripts/write-provenance.py" "$out_dir/meta.json" \
-                    --converter native-arm64 --bin "$NATIVE_BIN" \
-                    --overlay-version "$OVERLAY_HASH" \
-                    >>"$LOG_FILE" 2>&1 \
-                    || log "reconvert [$idx/$total] provenance write FAILED: $out_dir"
-                ok=$((ok + 1))
-            else
-                log "reconvert [$idx/$total] inject FAILED: $out_dir/$out_name"
-                failed=$((failed + 1))
-            fi
-        else
+        if ! native_convert "$pdf_path" "$out_dir"; then
             log "reconvert [$idx/$total] pdf2htmlEX FAILED: $source_ref"
             failed=$((failed + 1))
+        elif ! build_entry "$out_dir" "$out_name" "$hash" "${pdf_name%.*}"; then
+            log "reconvert [$idx/$total] inject FAILED: $out_dir/$out_name"
+            failed=$((failed + 1))
+        else
+            # The dir was wiped above, so rebuild the extras too.
+            write_provenance "$out_dir" || log "reconvert [$idx/$total] provenance write FAILED: $out_dir"
+            ensure_meta "$pdf_path" "$out_dir" || log "reconvert [$idx/$total] meta FAILED: $out_dir"
+            ensure_thumbs "$pdf_path" "$out_dir" || log "reconvert [$idx/$total] thumbs FAILED: $out_dir"
+            ok=$((ok + 1))
         fi
     done < "$MAP_FILE"
 
@@ -274,26 +210,12 @@ if [[ "$MODE" == "light" ]]; then
         fi
 
         stem=$(basename "$html" .html)
-        light_html="$out_dir/${stem}.light.html"
         say "light [$idx/$total]: $hash"
 
-        if uv run "$EXTERNALIZER" \
-                "$html" "$light_html" \
-                --image-dir "$out_dir/page-images" \
-                --url-prefix "/$hash/page-images/" \
-                --eager 2 \
-                --text-layer=paint-safe \
-                --clean >>"$LOG_FILE" 2>&1; then
-            if uv run "$INJECTOR" "$light_html" "$stem" \
-                    >>"$LOG_FILE" 2>&1; then
-                ok=$((ok + 1))
-            else
-                log "light [$idx/$total] inject FAILED: $light_html"
-                failed=$((failed + 1))
-            fi
+        if build_light "$out_dir" "$(basename "$html")" "$hash" "$stem" force; then
+            ok=$((ok + 1))
         else
             log "light [$idx/$total] FAILED: $html"
-            rm -f "$light_html"
             failed=$((failed + 1))
         fi
     done < "$MAP_FILE"
@@ -326,25 +248,14 @@ if [[ "$MODE" == "meta" ]]; then
             continue
         fi
 
-        # Resolve source PDF by scheme.
-        if [[ "$source_ref" =~ ^https?:// ]]; then
-            pdf_path=$(ls "$out_dir/_source"/*.pdf 2>/dev/null | head -1)
-            if [[ -z "$pdf_path" ]]; then
-                log "meta [$idx/$total] skip (no cached source PDF): $source_ref"
-                skipped=$((skipped + 1))
-                continue
-            fi
-        else
-            if [[ ! -f "$source_ref" ]]; then
-                log "meta [$idx/$total] skip (source missing): $source_ref"
-                skipped=$((skipped + 1))
-                continue
-            fi
-            pdf_path="$source_ref"
+        pdf_path=$(entry_source_pdf "$source_ref" "$out_dir")
+        if [[ -z "$pdf_path" ]]; then
+            log "meta [$idx/$total] skip (source PDF missing): $source_ref"
+            skipped=$((skipped + 1))
+            continue
         fi
 
-        if "$REPO_DIR/scripts/extract-pdf-meta.sh" "$pdf_path" "$out_dir/meta.json" \
-                >>"$LOG_FILE" 2>&1; then
+        if ensure_meta "$pdf_path" "$out_dir" force; then
             ok=$((ok + 1))
             log "meta [$idx/$total] ok: $hash"
         else
@@ -386,33 +297,21 @@ if [[ "$MODE" == "thumbs" ]]; then
             continue
         fi
 
-        # Resolve source PDF by scheme (same rules as meta mode).
-        if [[ "$source_ref" =~ ^https?:// ]]; then
-            pdf_path=$(ls "$out_dir/_source"/*.pdf 2>/dev/null | head -1)
-            if [[ -z "$pdf_path" ]]; then
-                log "thumbs [$idx/$total] skip (no cached source PDF): $source_ref"
-                skipped=$((skipped + 1))
-                continue
-            fi
-        else
-            if [[ ! -f "$source_ref" ]]; then
-                log "thumbs [$idx/$total] skip (source missing): $source_ref"
-                skipped=$((skipped + 1))
-                continue
-            fi
-            pdf_path="$source_ref"
+        pdf_path=$(entry_source_pdf "$source_ref" "$out_dir")
+        if [[ -z "$pdf_path" ]]; then
+            log "thumbs [$idx/$total] skip (source PDF missing): $source_ref"
+            skipped=$((skipped + 1))
+            continue
         fi
 
-        if "$REPO_DIR/scripts/extract-pdf-thumbs.sh" "$pdf_path" "$out_dir/thumbs" \
-                >>"$LOG_FILE" 2>&1; then
+        # ensure_thumbs removes partial output on failure, so the next run
+        # retries rather than honoring the "already present" skip.
+        if ensure_thumbs "$pdf_path" "$out_dir"; then
             ok=$((ok + 1))
             log "thumbs [$idx/$total] ok: $hash"
         else
             failed=$((failed + 1))
             log "thumbs [$idx/$total] FAILED: $pdf_path"
-            # Clean up partial output so the next run retries rather than
-            # honoring the "already present" skip.
-            rm -rf "$out_dir/thumbs"
         fi
     done < "$MAP_FILE"
 

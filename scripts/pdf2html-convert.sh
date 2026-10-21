@@ -1,50 +1,37 @@
 #!/bin/bash
 
 # ============================================================================
-# pdf_viewer — phase-1 conversion logic.
+# pdf_viewer — convert the active Google Chrome tab's PDF into the cache.
 #
-# Invoked by the thin Raycast entrypoint at
-#   raycast_scripts/other/pdf-viewer-convert.sh
-# (raycast only indexes files under raycast_scripts/, so that's where the
-# Raycast-header entrypoint must live).
-#
-# This script carries the real behavior. It's functionally equivalent to the
-# old hardcoded pdf2html-convert.sh in raycast_scripts/other/, but:
-#   - Uses port 7435 + cache ~/.cache/pdf_viewer/ so it runs side-by-side
-#     with the old one for A/B comparison
-#   - Injects <link>/<script> tags pointing to /_assets/overlay.{css,js}
-#     instead of inline CSS/JS
-#   - Those assets are symlinked from pdf_viewer/assets/, so editing them
-#     is a file-save away from affecting every converted HTML
+# Invoked by the thin Raycast entrypoint raycast/pdf-viewer-convert.sh, which
+# forks this script into the background. Reads the active tab's URL, gets the
+# PDF (local file, direct download, or through the browser extension when the
+# host needs the browser's session), builds the cache entry with the shared
+# pipeline (scripts/lib/pipeline.sh), and asks the extension to navigate that
+# tab to the viewer.
 # ============================================================================
 
 PORT=7435
-REPO_DIR="/Users/andersbekkevard/dev/misc/pdf_viewer"
-ASSET_SRC="$REPO_DIR/assets"
-CACHE_DIR="$HOME/.cache/pdf_viewer"
-LOG_FILE="$CACHE_DIR/log"
-MAP_FILE="$CACHE_DIR/mappings.tsv"
-ASSET_LINK="$CACHE_DIR/_assets"
-# Native arm64 pdf2htmlEX (replaces the old amd64 Docker image). Installed by
-# scripts/install-native-pdf2htmlex.sh. --data-dir is passed explicitly on
-# every invocation — the binary's baked default lookup is fragile.
-NATIVE_BIN="$HOME/.local/opt/pdf2htmlEX/bin/pdf2htmlEX"
-NATIVE_DATA_DIR="$HOME/.local/opt/pdf2htmlEX/share/pdf2htmlEX"
-# Baked poppler-data default is a version-pinned Cellar path that breaks on
-# brew upgrade; pass the stable symlink explicitly (needed for CJK/CID PDFs).
-NATIVE_POPPLER_DATA="/opt/homebrew/share/poppler"
-INJECTOR="$REPO_DIR/scripts/inject-overlay.py"
-EXTERNALIZER="$REPO_DIR/scripts/externalize-page-images.py"
-LIGHT_VARIANTS_ENABLED="${PDF_VIEWER_ENABLE_LIGHT:-${PDF_VIEWER_ENABLE_EXPERIMENTAL_LIGHT:-1}}"
+# shellcheck source=lib/pipeline.sh
+source "$(cd "$(dirname "$0")" && pwd)/lib/pipeline.sh"
 
-mkdir -p "$CACHE_DIR"
 # The Raycast wrapper forks us into the background and redirects all stdio
 # to the log, so the immediate HUD bubble the user sees is the wrapper's
 # own `echo` — nothing this script prints reaches Raycast. stdout/stderr
 # go log-only.
 exec >>"$LOG_FILE" 2>&1
 
-log() { printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >> "$LOG_FILE"; }
+# osasafe — escape a string for interpolation inside an AppleScript
+# double-quoted string. fail()/notify() messages can carry shell-special
+# bytes (e.g. download magic bytes like `<!DO...`); an unescaped `"` or `\`
+# would break the osascript expression and swallow the error banner.
+# Parameter expansion only — safe on macOS system bash 3.2.
+osasafe() {
+    local s="$1"
+    s="${s//\\/\\\\}"
+    s="${s//\"/\\\"}"
+    printf '%s' "$s"
+}
 
 # notify <message> [<subtitle>] — macOS Notification Center toast. Raycast's
 # silent mode doesn't surface its own UI during a run, so these are the only
@@ -53,9 +40,9 @@ notify() {
     local msg="$1"
     local subtitle="${2:-}"
     if [[ -n "$subtitle" ]]; then
-        osascript -e "display notification \"$msg\" with title \"pdf_viewer\" subtitle \"$subtitle\"" >/dev/null 2>&1
+        osascript -e "display notification \"$(osasafe "$msg")\" with title \"pdf_viewer\" subtitle \"$(osasafe "$subtitle")\"" >/dev/null 2>&1
     else
-        osascript -e "display notification \"$msg\" with title \"pdf_viewer\"" >/dev/null 2>&1
+        osascript -e "display notification \"$(osasafe "$msg")\" with title \"pdf_viewer\"" >/dev/null 2>&1
     fi
 }
 
@@ -65,16 +52,62 @@ fail() {
     # Distinct title so macOS doesn't coalesce with any prior "pdf_viewer"
     # banner (e.g. the "Converting…" notification fired just before the
     # convert step would otherwise replace this error message silently).
-    osascript -e "display notification \"$1\" with title \"pdf_viewer error\"" >/dev/null 2>&1
+    osascript -e "display notification \"$(osasafe "$1")\" with title \"pdf_viewer error\"" >/dev/null 2>&1
     exit 1
 }
 
+# browser_fetch <url> <out_file> <headers_file> — download <url> through the
+# browser extension, which has the signed-in session that curl lacks. The
+# daemon relays a `fetch` signal; the extension fetches the URL only if one of
+# its tabs has it open, then hands the bytes back. On failure it returns 1 with
+# the reason in BROWSER_FETCH_ERROR.
+BROWSER_FETCH_ACK_SEC=40     # extension SW may sleep up to one 30 s alarm tick
+BROWSER_FETCH_TOTAL_SEC=300
+browser_fetch() {
+    local url="$1" out="$2" hdrs="$3" body resp id code waited=0
+    BROWSER_FETCH_ERROR=""
+    body=$(python3 -c "import json, sys; print(json.dumps({'url': sys.argv[1]}))" "$url")
+    resp=$(curl -sSf --max-time 3 -X POST -H 'Content-Type: application/json' \
+        -d "$body" "http://localhost:${PORT}/signal/fetch" 2>&1) || {
+        BROWSER_FETCH_ERROR="daemon did not accept the fetch request ($resp)"
+        return 1
+    }
+    id=$(printf '%s' "$resp" | python3 -c "import json, sys; print(json.load(sys.stdin)['id'])" 2>/dev/null)
+    [[ -n "$id" ]] || { BROWSER_FETCH_ERROR="daemon gave no fetch id"; return 1; }
+    while (( waited < BROWSER_FETCH_TOTAL_SEC * 2 )); do
+        code=$(curl -sS --max-time 600 -D "$hdrs" -o "$out" -w '%{http_code}' \
+            "http://localhost:${PORT}/fetch/${id}" 2>/dev/null)
+        case "$code" in
+            200)
+                [[ "$(head -c 4 "$out")" == "%PDF" ]] && return 0
+                BROWSER_FETCH_ERROR="browser returned a non-PDF"
+                return 1
+                ;;
+            202)
+                if (( waited >= BROWSER_FETCH_ACK_SEC * 2 )) && ! grep -q '"started"' "$out"; then
+                    BROWSER_FETCH_ERROR="no Chrome tab answered; is the Anders PDF Viewer extension loaded and up to date (reload it in chrome://extensions)?"
+                    return 1
+                fi
+                ;;
+            502)
+                BROWSER_FETCH_ERROR=$(python3 -c "import json, sys; print(json.load(open(sys.argv[1]))['error'])" "$out" 2>/dev/null)
+                [[ -n "$BROWSER_FETCH_ERROR" ]] || BROWSER_FETCH_ERROR="extension reported an error"
+                return 1
+                ;;
+            *)
+                BROWSER_FETCH_ERROR="daemon returned HTTP ${code:-none} for the fetch result"
+                return 1
+                ;;
+        esac
+        sleep 0.5
+        waited=$((waited + 1))
+    done
+    BROWSER_FETCH_ERROR="browser download did not finish within ${BROWSER_FETCH_TOTAL_SEC}s"
+    return 1
+}
 
-# Symlink assets into cache dir so http.server serves them at /_assets/*
-if [[ ! -L "$ASSET_LINK" ]]; then
-    rm -rf "$ASSET_LINK" 2>/dev/null
-    ln -s "$ASSET_SRC" "$ASSET_LINK" || fail "Could not link assets dir"
-fi
+
+ensure_asset_link || fail "Could not link assets dir"
 
 # Get active tab URL from Google Chrome. Addressed by bundle id: the name
 # "Google Chrome" can resolve to Playwright's "Google Chrome for Testing".
@@ -94,7 +127,7 @@ if [[ "$TAB_URL" =~ ^file://.*\.[pP][dD][fF]$ ]]; then
     [[ -f "$LOCAL_PATH" ]] || fail "PDF not found on disk"
 
     # Stable per-file cache key (content hash, survives moves/renames)
-    HASH=$(shasum -a 256 "$LOCAL_PATH" | awk '{print $1}' | head -c 16)
+    HASH=$(content_hash "$LOCAL_PATH")
     PDF_NAME=$(basename "$LOCAL_PATH")
     OUT_NAME="${PDF_NAME%.*}.html"
     OUT_DIR="$CACHE_DIR/$HASH"
@@ -127,21 +160,40 @@ elif [[ "$TAB_URL" =~ ^https?:// ]]; then
         mkdir -p "$PDF_DIR"
         notify "Downloading…" "Fetching source PDF from ${TAB_URL:0:60}"
         log "download start: $TAB_URL"
+        DIRECT_PROBLEM=""
         if ! curl -fsSL --max-time 300 \
                 -D "$PDF_DIR/headers.txt" \
                 -o "$PDF_DIR/document.pdf" \
                 "$TAB_URL"; then
-            rm -rf "$OUT_DIR"
-            fail "Download failed"
+            DIRECT_PROBLEM="download failed"
+        else
+            # Magic-byte sanity check (catches login pages from expired signed
+            # URLs or auth-gated hosts such as Cloudflare Access, which return
+            # HTTP 200 HTML so curl -f does not trip).
+            MAGIC=$(head -c 4 "$PDF_DIR/document.pdf" 2>/dev/null)
+            if [[ "$MAGIC" != "%PDF" ]]; then
+                log "magic-byte check failed; first 200 bytes of $PDF_DIR/document.pdf:"
+                head -c 200 "$PDF_DIR/document.pdf" | od -c >>"$LOG_FILE" 2>&1
+                # Printable-only truncation for the user-facing message. (No
+                # ${var@Q} here: this script runs on macOS system bash 3.2,
+                # where that expansion is a syntax error that aborts fail()
+                # and lets the script fall through into a bogus convert.)
+                MAGIC_SAFE=$(printf '%s' "$MAGIC" | tr -cd '[:print:]' | cut -c1-20)
+                DIRECT_PROBLEM="got non-PDF (magic: $MAGIC_SAFE), likely a sign-in page"
+            fi
         fi
 
-        # Magic-byte sanity check (catches login pages from expired signed URLs)
-        MAGIC=$(head -c 4 "$PDF_DIR/document.pdf" 2>/dev/null)
-        if [[ "$MAGIC" != "%PDF" ]]; then
-            log "magic-byte check failed; first 200 bytes of $PDF_DIR/document.pdf:"
-            head -c 200 "$PDF_DIR/document.pdf" | od -c >>"$LOG_FILE" 2>&1
-            rm -rf "$OUT_DIR"
-            fail "Downloaded file is not a PDF (magic: ${MAGIC@Q})"
+        # curl has none of the browser's cookies. Retry through the extension,
+        # which fetches the same URL inside the signed-in browser session.
+        if [[ -n "$DIRECT_PROBLEM" ]]; then
+            log "direct download $DIRECT_PROBLEM; retrying through the browser"
+            notify "Downloading through Chrome…" "Direct download $DIRECT_PROBLEM"
+            rm -f "$PDF_DIR/document.pdf" "$PDF_DIR/headers.txt"
+            if ! browser_fetch "$TAB_URL" "$PDF_DIR/document.pdf" "$PDF_DIR/headers.txt"; then
+                rm -rf "$OUT_DIR"
+                fail "Could not get the PDF. Direct: $DIRECT_PROBLEM. Browser: $BROWSER_FETCH_ERROR"
+            fi
+            log "browser fetch ok"
         fi
         log "download ok: $(du -h "$PDF_DIR/document.pdf" | cut -f1)"
 
@@ -188,53 +240,20 @@ fi
 DID_CONVERT=0
 if [[ ! -f "$OUT_DIR/$OUT_NAME" ]]; then
     notify "Converting $PDF_NAME" "Cache miss — may take up to ~2 minutes"
-    [[ -x "$NATIVE_BIN" ]] || \
-        fail "native pdf2htmlEX not installed — run scripts/install-native-pdf2htmlex.sh"
+    native_ready || fail "native pdf2htmlEX not installed — run scripts/install-native-pdf2htmlex.sh"
     log "convert start: $SOURCE_REF -> $OUT_DIR/$OUT_NAME"
-    "$NATIVE_BIN" --data-dir "$NATIVE_DATA_DIR" \
-        --poppler-data-dir "$NATIVE_POPPLER_DATA" --dest-dir "$OUT_DIR" \
-        "$PDF_DIR/$PDF_NAME" \
-        >>"$LOG_FILE" 2>&1 \
+    native_convert "$PDF_DIR/$PDF_NAME" "$OUT_DIR" \
         || fail "pdf2htmlEX conversion failed (see $LOG_FILE)"
     log "convert done: $OUT_NAME"
     DID_CONVERT=1
 fi
 
-# Inject title, favicon, and overlay <link>/<script> tags (idempotent).
-# Same code also runs from upgrade-cache.sh --mode=inject.
-uv run "$INJECTOR" \
-    "$OUT_DIR/$OUT_NAME" "${PDF_NAME%.*}" \
+# Title, favicon and overlay tags on the canonical HTML (fatal), then the
+# light variant when missing or older than the canonical HTML (non-fatal).
+# Every step is idempotent, so a cache hit refreshes injection too.
+build_entry "$OUT_DIR" "$OUT_NAME" "$HASH" "${PDF_NAME%.*}" \
     || fail "overlay injection failed"
-
-# Note: native browser Cmd-F now indexes the full document via
-# `content-visibility: auto` on `.pf` (overlay.css). No surrogate text layer,
-# no `text.json`. See ADR 0009.
-
-# Derived light-v1 variant. Enabled by default; set PDF_VIEWER_ENABLE_LIGHT=0
-# to keep only the canonical artifact. The legacy flag remains compatible.
 LIGHT_OUT_NAME="${OUT_NAME%.html}.light.html"
-if [[ "$LIGHT_VARIANTS_ENABLED" == "1" && ( ! -f "$OUT_DIR/$LIGHT_OUT_NAME" || "$OUT_DIR/$OUT_NAME" -nt "$OUT_DIR/$LIGHT_OUT_NAME" ) ]]; then
-    log "light variant start: $OUT_DIR/$LIGHT_OUT_NAME"
-    if uv run "$EXTERNALIZER" \
-            "$OUT_DIR/$OUT_NAME" "$OUT_DIR/$LIGHT_OUT_NAME" \
-            --image-dir "$OUT_DIR/page-images" \
-            --url-prefix "/$HASH/page-images/" \
-            --eager 2 \
-            --text-layer=paint-safe \
-            --clean; then
-        log "light variant done: $LIGHT_OUT_NAME"
-    else
-        log "light variant failed for $OUT_NAME; falling back to canonical"
-        rm -f "$OUT_DIR/$LIGHT_OUT_NAME"
-    fi
-elif [[ "$LIGHT_VARIANTS_ENABLED" != "1" ]]; then
-    log "light variant generation disabled by PDF_VIEWER_ENABLE_LIGHT=0"
-fi
-if [[ "$LIGHT_VARIANTS_ENABLED" == "1" && -f "$OUT_DIR/$LIGHT_OUT_NAME" ]]; then
-    uv run "$INJECTOR" \
-        "$OUT_DIR/$LIGHT_OUT_NAME" "${PDF_NAME%.*}" \
-        || log "light variant overlay injection failed for $LIGHT_OUT_NAME"
-fi
 
 # Verify the daemon is up. launchd owns it (phase 5) — this script must NOT
 # fall back to starting `python3 -m http.server`, because the daemon's GET /
@@ -260,13 +279,8 @@ fi
 ENCODED_NAME=$(python3 -c "import sys, urllib.parse as u; print(u.quote(sys.argv[1]))" "$NAV_NAME")
 URL="http://localhost:${PORT}/${HASH}/${ENCODED_NAME}"
 
-# Upsert pdf→html mapping (dedupe on HASH — works for both file and url)
-{
-    if [[ -f "$MAP_FILE" ]]; then
-        awk -F'\t' -v h="$HASH" '$3 != h' "$MAP_FILE"
-    fi
-    printf '%s\t%s\t%s\t%s\n' "$(date -Iseconds)" "$SOURCE_REF" "$HASH" "$OUT_DIR/$OUT_NAME"
-} > "$MAP_FILE.tmp" && mv "$MAP_FILE.tmp" "$MAP_FILE"
+upsert_mapping "$SOURCE_REF" "$HASH" "$OUT_DIR/$OUT_NAME" \
+    || log "mapping update failed for $HASH"
 
 # Navigate the *originating* tab in-place — extension-mediated so we don't
 # pull Comet to the front. Post {from_url, to_url} to the daemon; the
@@ -301,11 +315,7 @@ notify "Opened $PDF_NAME"
 # correctness; doing it first just sidesteps a concurrent read-modify-write.
 # Only on a real conversion — a cache hit keeps its original provenance.
 if [[ "$DID_CONVERT" == "1" ]]; then
-    OVERLAY_HASH="$(uv run "$INJECTOR" --print-version)"
-    python3 "$REPO_DIR/scripts/write-provenance.py" "$OUT_DIR/meta.json" \
-        --converter native-arm64 --bin "$NATIVE_BIN" \
-        --overlay-version "$OVERLAY_HASH" \
-        || log "provenance write failed for $PDF_NAME"
+    write_provenance "$OUT_DIR" || log "provenance write failed for $PDF_NAME"
 fi
 
 # Meta + per-page thumbs run AFTER the tab-nav signal — both are non-critical
@@ -313,22 +323,6 @@ fi
 # page textbooks pdftocairo adds 5–15s that used to block the tab swap.
 # Run them in parallel; `wait` at end keeps this process alive until they
 # finish so log output stays coherent and no jobs get orphaned.
-# Gate on the pdfinfo keys, not mere file existence — write-provenance.py may
-# have just created a provenance-only meta.json above.
-if ! python3 -c "import json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if any(k in d for k in ('pages','title','author','file_size')) else 1)" "$OUT_DIR/meta.json" 2>/dev/null; then
-    (
-        "$REPO_DIR/scripts/extract-pdf-meta.sh" \
-            "$PDF_DIR/$PDF_NAME" "$OUT_DIR/meta.json" \
-            || log "meta extraction failed for $PDF_NAME"
-    ) &
-fi
-
-if [[ ! -d "$OUT_DIR/thumbs" ]]; then
-    (
-        "$REPO_DIR/scripts/extract-pdf-thumbs.sh" \
-            "$PDF_DIR/$PDF_NAME" "$OUT_DIR/thumbs" \
-            || log "thumb extraction failed for $PDF_NAME"
-    ) &
-fi
-
+( ensure_meta "$PDF_DIR/$PDF_NAME" "$OUT_DIR" || log "meta extraction failed for $PDF_NAME" ) &
+( ensure_thumbs "$PDF_DIR/$PDF_NAME" "$OUT_DIR" || log "thumb extraction failed for $PDF_NAME" ) &
 wait
