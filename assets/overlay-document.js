@@ -1,4 +1,4 @@
-// Document structure, text shape, and light-raster lifecycle.
+// Document structure, text shape, scroll geometry, and light-raster lifecycle.
 //
 // pdf2htmlEX's page IDs are hexadecimal (`#pf1`, `#pfa`, …), while feature
 // code deals in one-based page numbers. Keep that DOM translation — plus the
@@ -10,9 +10,15 @@ export function createDocumentModel(core) {
 
     function html() { return document.documentElement; }
     function container() { return document.getElementById('page-container'); }
+    // Converted page frames are static. Keep the node list, never geometry:
+    // offsets and dimensions still come from fresh rects after zoom/resize.
+    var pagesCache = null;
     function pages() {
+        if (pagesCache) return pagesCache;
         var root = container();
-        return root ? Array.prototype.slice.call(root.querySelectorAll('.pf')) : [];
+        if (!root) return [];
+        pagesCache = Array.prototype.slice.call(root.querySelectorAll('.pf'));
+        return pagesCache;
     }
     function totalPages() { return pages().length; }
     function page(pageNum) {
@@ -30,6 +36,39 @@ export function createDocumentModel(core) {
         return element && element.closest ? element.closest('.pf') : null;
     }
     function pageNumberFromNode(node) { return pageNumber(pageFromNode(node)); }
+    // `#pf1f` (outline and page links, location.hash) → 31, else null.
+    // `#page=12` (the standard PDF fragment, decimal) → 12.
+    function pageNumberFromHash(hash) {
+        var h = String(hash || '');
+        var match = h.match(/#pf([0-9a-f]+)$/i);
+        if (match) return parseInt(match[1], 16);
+        match = h.match(/[#&]page=(\d+)/i);
+        return match ? parseInt(match[1], 10) : null;
+    }
+
+    // pdf2htmlEX's #outline, flattened in document order: one entry per
+    // `a[href="#pfN"]`, carrying its target page and the pdf2htmlEX
+    // destination (`data-dest-detail`) when the PDF supplied one. The outline
+    // never changes after load, so this is computed once.
+    var outlineCache = null;
+    function outline() {
+        if (outlineCache) return outlineCache;
+        var root = document.getElementById('outline');
+        var links = root ? root.querySelectorAll('a[href^="#pf"]') : [];
+        outlineCache = [];
+        for (var i = 0; i < links.length; i++) {
+            var page = pageNumberFromHash(links[i].getAttribute('href'));
+            if (!page) continue;
+            outlineCache.push({
+                index: outlineCache.length,
+                link: links[i],
+                page: page,
+                label: (links[i].textContent || '').replace(/\s+/g, ' ').trim(),
+                dest: links[i].getAttribute('data-dest-detail'),
+            });
+        }
+        return outlineCache;
+    }
     function pageContent(pageOrNumber) {
         var pf = typeof pageOrNumber === 'number' ? page(pageOrNumber) : pageOrNumber;
         return pf ? pf.querySelector('.pc') : null;
@@ -69,6 +108,72 @@ export function createDocumentModel(core) {
         });
     }
 
+    // Scroll geometry. Zoom lives on the `.pf` pages, never on the scroller,
+    // so #page-container's scrollTop/clientHeight are screen pixels — the
+    // same unit as getBoundingClientRect. A zoomed page's own offsetTop /
+    // offsetHeight are in page-local units instead, so page positions are
+    // always derived from rects here; feature code must not read `offset*`
+    // on a `.pf`. See docs/pdf2htmlex-dom.md, "Zoom and scroll geometry".
+    function pageExtent(pf) {
+        var root = container();
+        if (!root || !pf) return null;
+        var rootRect = root.getBoundingClientRect();
+        var rect = pf.getBoundingClientRect();
+        var top = rect.top - rootRect.top - root.clientTop + root.scrollTop;
+        var left = rect.left - rootRect.left - root.clientLeft + root.scrollLeft;
+        return { top: top, bottom: top + rect.height, left: left, width: rect.width, height: rect.height };
+    }
+    // Put the page's top `lead` px below the viewport top. Scrolling to an
+    // offset bypasses scroll-padding, unlike scrollIntoView, which would park
+    // the page inside the scrolloff band (mid-screen when pinned).
+    function scrollToPage(pf, lead, smooth) {
+        var root = container();
+        var extent = pageExtent(pf);
+        if (!root || !extent) return false;
+        root.scrollTo({ top: Math.max(0, extent.top - (lead || 0)), behavior: smooth ? 'smooth' : 'instant' });
+        return true;
+    }
+    // The page covering most of the viewport (one-based), or null.
+    function mostVisiblePage(candidates) {
+        var root = container();
+        if (!root) return null;
+        var box = root.getBoundingClientRect();
+        var list = candidates || pages();
+        var best = null, bestOverlap = 0;
+        for (var i = 0; i < list.length; i++) {
+            var rect = list[i].getBoundingClientRect();
+            var overlap = Math.min(rect.bottom, box.bottom) - Math.max(rect.top, box.top);
+            if (overlap > bestOverlap) { bestOverlap = overlap; best = list[i]; }
+        }
+        return best ? pageNumber(best) : null;
+    }
+    // Reading position as the page under the viewport's top-left corner and
+    // how far into it, in fractions of the page. Fractions survive anything
+    // that rescales pages (our zoom, pdf2htmlEX's own rescale).
+    function viewAnchor() {
+        var root = container();
+        if (!root) return null;
+        var all = pages();
+        for (var i = 0; i < all.length; i++) {
+            var extent = pageExtent(all[i]);
+            if (extent.bottom <= root.scrollTop) continue;
+            return {
+                page: all[i],
+                y: (root.scrollTop - extent.top) / extent.height,
+                x: extent.width ? (root.scrollLeft - extent.left) / extent.width : 0,
+            };
+        }
+        return null;
+    }
+    function restoreViewAnchor(anchor) {
+        var root = container();
+        if (!root || !anchor) return;
+        var extent = pageExtent(anchor.page);
+        if (!extent) return;
+        root.scrollTop = extent.top + anchor.y * extent.height;
+        root.scrollLeft = extent.left + anchor.x * extent.width;
+    }
+
     // The explicit marker is the forward contract. Existing generated cache
     // entries still use body/attribute markers, so retain those as fallbacks.
     function representation() {
@@ -90,73 +195,73 @@ export function createDocumentModel(core) {
     // on the frame so other features can observe lifecycle without inspecting
     // individual image attributes: unloaded -> loading -> ready | error.
     function mountRasterLifecycle() {
-        var rasters = document.querySelectorAll('#page-container .pc > img.bi[data-pdf2html-src]');
-        if (!rasters.length) return;
         var root = container();
-        var allPages = pages();
-        var preloadPx = 3500;
-        var raf = null;
+        if (!root) return;
+        var entries = new Map();
 
-        function setState(pf, state) { pf.dataset.pdf2htmlRasterState = state; }
+        function setState(entry, state) {
+            if (entry.page.dataset.pdf2htmlRasterState !== state) {
+                entry.page.dataset.pdf2htmlRasterState = state;
+            }
+        }
         function sourceFor(img) { return img.getAttribute('data-pdf2html-src'); }
-        function pageRasters(pf) { return pf.querySelectorAll('img.bi[data-pdf2html-src]'); }
-        function isReady(img) { return img.complete && img.naturalWidth > 0; }
-        function bind(img, pf) {
-            if (img.__pdf2htmlRasterLifecycleBound) return;
-            img.__pdf2htmlRasterLifecycleBound = true;
-            img.addEventListener('load', function () {
-                if (img.getAttribute('src') === sourceFor(img)) setState(pf, 'ready');
+        function updateState(entry) {
+            // Completion of an old request must not revive an exited page.
+            if (!entry.mounted) return;
+            var ready = true, failed = false;
+            entry.images.forEach(function (img) {
+                if (img.getAttribute('src') !== sourceFor(img) || !img.complete) ready = false;
+                else if (!img.naturalWidth) { ready = false; failed = true; }
             });
-            img.addEventListener('error', function () {
-                if (img.getAttribute('src') === sourceFor(img)) setState(pf, 'error');
+            setState(entry, failed ? 'error' : ready ? 'ready' : 'loading');
+        }
+        function load(entry) {
+            if (entry.mounted) return;
+            entry.mounted = true;
+            setState(entry, 'loading');
+            entry.images.forEach(function (img) {
+                var source = sourceFor(img);
+                if (img.getAttribute('src') !== source) img.setAttribute('src', source);
             });
+            updateState(entry);
         }
-        function loadPage(pf) {
-            var imgs = pageRasters(pf);
-            var ready = true;
-            var failed = false;
-            for (var i = 0; i < imgs.length; i++) {
-                var img = imgs[i];
-                var src = sourceFor(img);
-                if (!src) continue;
-                bind(img, pf);
-                var hasCurrentSource = img.getAttribute('src') === src;
-                if (!hasCurrentSource) img.setAttribute('src', src);
-                if (!isReady(img)) {
-                    ready = false;
-                    // A complete image with no natural width is a cached
-                    // failure. Keep the observable error state until this
-                    // page is unloaded and later retried.
-                    if (hasCurrentSource && img.complete) failed = true;
-                }
-            }
-            setState(pf, failed ? 'error' : ready ? 'ready' : 'loading');
-        }
-        function unloadPage(pf) {
-            var imgs = pageRasters(pf);
-            for (var i = 0; i < imgs.length; i++) imgs[i].removeAttribute('src');
-            setState(pf, 'unloaded');
-        }
-        function sync() {
-            raf = null;
-            var rootRect = root ? root.getBoundingClientRect() : { top: 0, bottom: window.innerHeight };
-            var top = rootRect.top - preloadPx;
-            var bottom = rootRect.bottom + preloadPx;
-            for (var i = 0; i < allPages.length; i++) {
-                var rect = allPages[i].getBoundingClientRect();
-                if (rect.bottom >= top && rect.top <= bottom) loadPage(allPages[i]);
-                else unloadPage(allPages[i]);
-            }
-        }
-        function scheduleSync() {
-            if (raf) return;
-            raf = requestAnimationFrame(sync);
+        function unload(entry) {
+            if (!entry.mounted) return;
+            entry.mounted = false;
+            entry.images.forEach(function (img) {
+                if (img.hasAttribute('src')) img.removeAttribute('src');
+            });
+            setState(entry, 'unloaded');
         }
 
-        if (root) root.addEventListener('scroll', scheduleSync, { passive: true });
-        window.addEventListener('resize', scheduleSync);
-        document.addEventListener('pdf2html-page-counter-refresh', scheduleSync);
-        scheduleSync();
+        pages().forEach(function (pf) {
+            var images = Array.prototype.slice.call(pf.querySelectorAll('img.bi[data-pdf2html-src]'));
+            if (!images.length) return;
+            var entry = { page: pf, images: images, mounted: false };
+            entries.set(pf, entry);
+            images.forEach(function (img) {
+                img.addEventListener('load', function () { updateState(entry); });
+                img.addEventListener('error', function () { updateState(entry); });
+                // Converter-eager sources are handled by the same lifecycle.
+                if (img.hasAttribute('src')) img.removeAttribute('src');
+            });
+            setState(entry, 'unloaded');
+        });
+        if (!entries.size) return;
+
+        // Observe page frames, whose geometry is available even while their
+        // content-visibility subtree is skipped. Scrolling, resize, zoom and
+        // far native-find jumps update intersections without an O(book) scan.
+        var observer = new window.IntersectionObserver(function (changes) {
+            // Drop the old window before mounting the new one on distant jumps.
+            changes.forEach(function (change) {
+                if (!change.isIntersecting) unload(entries.get(change.target));
+            });
+            changes.forEach(function (change) {
+                if (change.isIntersecting) load(entries.get(change.target));
+            });
+        }, { root: root, rootMargin: '3500px 0px', threshold: 0 });
+        entries.forEach(function (entry) { observer.observe(entry.page); });
     }
 
     return {
@@ -167,10 +272,17 @@ export function createDocumentModel(core) {
         pageNumber: pageNumber,
         pageFromNode: pageFromNode,
         pageNumberFromNode: pageNumberFromNode,
+        pageNumberFromHash: pageNumberFromHash,
+        outline: outline,
         pageContent: pageContent,
         pageText: pageText,
         pageTextBoundaryPosition: pageTextBoundaryPosition,
         visiblePages: visiblePages,
+        pageExtent: pageExtent,
+        scrollToPage: scrollToPage,
+        mostVisiblePage: mostVisiblePage,
+        viewAnchor: viewAnchor,
+        restoreViewAnchor: restoreViewAnchor,
         representation: representation,
         isLight: isLight,
         textMode: textMode,

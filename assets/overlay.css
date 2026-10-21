@@ -97,6 +97,18 @@ body.pdf2html-search-entered ::-moz-selection { background: transparent; color: 
 }
 
 
+/* ---- Page zoom --------------------------------------------------------------
+   overlay-zoom.js writes --pdf2html-zoom on #page-container; the pages apply
+   it. Never put `zoom` on the scroller itself: a zoomed scroller measures
+   scrollTop/scrollBy/clientHeight in its own unzoomed units, so every Vimium
+   j/d step would move zoom × the intended distance. Inside a page, lengths
+   are page-local and get multiplied by the zoom. */
+
+#page-container > .pf {
+    zoom: var(--pdf2html-zoom, 1);
+}
+
+
 /* ---- Scrollbars — slim, translucent, dark-chrome.
    Applied to the main PDF scroller and all overlay-owned scroll containers.
    Firefox uses `scrollbar-width`/`scrollbar-color`; WebKit the pseudo-elements.
@@ -114,8 +126,8 @@ body.pdf2html-search-entered ::-moz-selection { background: transparent; color: 
     scrollbar-color: rgba(255, 255, 255, 0.12) transparent;
 }
 
-/* Focus is plumbing for Vimium j/k scroll scoping (see registerFocusRouting
-   in overlay.js), not a user-visible affordance. Suppress the default ring. */
+/* Focus is plumbing for Vimium j/k scroll scoping (see overlay-focus.js),
+   not a user-visible affordance. Suppress the default ring. */
 #pdf2html-sidebar-body:focus,
 #pdf2html-sidebar-body:focus-visible,
 .pdf2html-cheatsheet-body:focus,
@@ -258,6 +270,24 @@ body #page-container .t.pdf2html-paint-safe[data-pdf2html-paint-safe="hidden"] *
     visibility: visible !important;
 }
 
+/* Hidden fallback glyphs are a logical selection/search layer. Selection
+   must tint the raster, not repaint a different font over its original ink.
+   Keep the custom search-entered highlight path and visible canonical text. */
+html[data-pdf2html-representation="light-v1"][data-pdf2html-text-mode="paint-safe"]
+body:not(.pdf2html-search-entered) #page-container .t.pdf2html-paint-safe[data-pdf2html-paint-safe="hidden"]::selection,
+html[data-pdf2html-representation="light-v1"][data-pdf2html-text-mode="paint-safe"]
+body:not(.pdf2html-search-entered) #page-container .t.pdf2html-paint-safe[data-pdf2html-paint-safe="hidden"] *::selection {
+    color: transparent;
+    background: rgba(153, 193, 218, 0.35);
+}
+html[data-pdf2html-representation="light-v1"][data-pdf2html-text-mode="paint-safe"]
+body:not(.pdf2html-search-entered) #page-container .t.pdf2html-paint-safe[data-pdf2html-paint-safe="hidden"]::-moz-selection,
+html[data-pdf2html-representation="light-v1"][data-pdf2html-text-mode="paint-safe"]
+body:not(.pdf2html-search-entered) #page-container .t.pdf2html-paint-safe[data-pdf2html-paint-safe="hidden"] *::-moz-selection {
+    color: transparent;
+    background: rgba(153, 193, 218, 0.35);
+}
+
 /* Legacy page-text light artifacts remain readable for rollback/testing. */
 body.pdf2html-light #page-container .pdf2html-page-text {
     position: absolute;
@@ -284,15 +314,10 @@ body.pdf2html-light #page-container .pdf2html-page-text {
 body:not(.sidebar-shown) #sidebar        { display: none !important; }
 body.sidebar-shown       #sidebar        { display: flex !important; }
 #page-container { left: 0 !important; }
+/* The shift is measured in screen px but applied inside the zoomed page. */
 body.pdf2html-page-shifted .pf {
-    transform: translateX(var(--pdf2html-page-shift));
+    transform: translateX(calc(var(--pdf2html-page-shift) / var(--pdf2html-zoom, 1)));
 }
-
-#pdf2html-sidebar-backdrop {
-    display: none !important;
-    pointer-events: none;
-}
-body.sidebar-shown #pdf2html-sidebar-backdrop { display: none !important; }
 
 
 /* ---- Floating sidebar-toggle button (top-left) ---- */
@@ -449,20 +474,6 @@ body.sidebar-shown #pdf2html-toggle { display: none; }
 #outline a.pdf2html-selected    { background: var(--bg-active); color: var(--fg) !important; box-shadow: inset 2px 0 0 var(--accent); }
 #outline a.pdf2html-active      { background: var(--accent-bg); color: var(--fg) !important; font-weight: 500 !important; }
 
-
-/* ---- Hidden controls host (render buffer + pin + render-all inputs) ----
-   The settings modal and palette commands talk to state through these
-   inputs; they're kept in DOM (not replaced with plain variables) so the
-   existing change-event plumbing works unchanged. Visually invisible. */
-
-#pdf2html-hidden-controls {
-    position: absolute !important;
-    width: 0; height: 0;
-    overflow: hidden;
-    pointer-events: none;
-    opacity: 0;
-    left: -9999px;
-}
 
 /* ---- Sidebar tabs (Outline / Pages) --------------------------------------- */
 

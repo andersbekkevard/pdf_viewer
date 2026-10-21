@@ -66,4 +66,5 @@ it's probably two decisions in one file.
 | 0009 | [Native Cmd-F via content-visibility: auto](0009-native-find-via-content-visibility.md) | Accepted |
 | 0010 | [Light HTML with external rasters and page text](0010-light-html-external-rasters-page-text.md) | Proposed |
 | 0011 | [Native arm64 pdf2htmlEX (no Docker for conversion)](0011-native-arm64-pdf2htmlex.md) | Accepted (supersedes Docker-compute half of 0004; zero-patch clause superseded by 0013) |
+| 0012 | [Page zoom lives on the pages, not the scroller](0012-page-zoom-off-the-scroller.md) | Accepted |
 | 0013 | [Patch pdf2htmlEX for text-layer fidelity](0013-patched-pdf2htmlex-text-fidelity.md) | Accepted |

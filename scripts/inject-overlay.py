@@ -6,9 +6,9 @@ Usage: inject-overlay.py <html_path> <title_stem>
        inject-overlay.py --print-version
 
 The asset version (?v=…) is derived automatically from a content hash of
-assets/overlay.js + assets/overlay.css (first 10 hex chars of sha256 over the
-two files' concatenated bytes), resolved relative to this script's repo
-location. No manual version constant — editing either asset changes the hash,
+every assets/overlay*.js module plus assets/overlay.css (first 10 hex chars
+of sha256 over their deterministically ordered concatenated bytes), resolved
+relative to this script's repo. Editing any overlay asset changes the hash,
 so the ?v= self-busts; re-running with unchanged assets is a byte-identical
 no-op.
 

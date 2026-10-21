@@ -8,14 +8,14 @@
 //
 // Interface (passed in `core`):
 //   - closeSearch()        — dismiss the find bar before opening hints
-//   - visiblePageFrames()  — currently-rendered .pf frames to scan
+//   - visiblePages()       — .pf frames intersecting the viewport, to scan
 //   - writeClip(text)      — copy a matched token to the clipboard
 //
 // Returns: { openFingerMode, closeFingerMode, isActive }
 // ============================================================================
 export function createFinger(core) {
     var closeSearch = core.closeSearch;
-    var visiblePageFrames = core.visiblePageFrames;
+    var visiblePages = core.visiblePages;
     var writeClip = core.writeClip;
 
     // Owned here; the entry module observes activeness via isActive().
@@ -224,7 +224,7 @@ export function createFinger(core) {
     }
 
     function collectFingerTargets() {
-        var pages = visiblePageFrames();
+        var pages = visiblePages();
         if (!pages.length) return [];
         var candidates = [];
         var scopeId = 0;

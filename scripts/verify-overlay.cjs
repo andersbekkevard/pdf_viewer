@@ -1,0 +1,535 @@
+#!/usr/bin/env node
+/*
+ * Overlay behavior proof against a real cached document.
+ *
+ * Usage: verify-overlay.cjs <viewer-url-or-path> [--only <group,...>]
+ *   e.g. /7319a537e6c3b9da/kompendium.light.html
+ *
+ * Groups (all by default):
+ *   geometry    zoom lives on pages; Vimium-sized steps; pdf2htmlEX links;
+ *               zoom changes keep the reading position; sidebar shift
+ *   navigation  page jumps land the page top 8 px below the viewport top;
+ *               outline jumps land their destination at the viewport top;
+ *               marks, resume, e/q, c
+ *   sidebar     outline + thumbnail keyboard commits, one active outline row
+ *   commands    palette commands, preferences, settings, cheatsheet, yank
+ *   search      `/` search, Enter lands inside the scrolloff band, n cycles
+ *
+ * The document should have an outline and internal links. This is a
+ * supplement to the real Comet + Vimium check, not a replacement: synthetic
+ * keys reach the page, but Vimium itself is not loaded.
+ */
+'use strict';
+
+const { chromium } = require('playwright');
+
+const BASE = 'http://localhost:7435';
+const VIEWPORT = { width: 1440, height: 1000 };
+const TOL = 1.5;
+const PAGE_LEAD = 8;
+
+const args = process.argv.slice(2);
+const target = args.find((a) => !a.startsWith('--'));
+const onlyIdx = args.indexOf('--only');
+const only = onlyIdx >= 0 && args[onlyIdx + 1] ? new Set(args[onlyIdx + 1].split(',')) : null;
+if (!target) {
+  console.error('usage: verify-overlay.cjs <viewer-url-or-path> [--only geometry,navigation,...]');
+  process.exit(2);
+}
+const URL = /^https?:/.test(target) ? target : BASE + (target.startsWith('/') ? '' : '/') + target;
+
+const results = [];
+function record(name, ok, detail) {
+  results.push({ name, ok, detail });
+  console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? ` — ${detail}` : ''}`);
+}
+const near = (a, b, tol = TOL) => typeof a === 'number' && Math.abs(a - b) <= tol;
+
+// In-page helpers, installed after every load.
+function installProbe() {
+  const pc = document.getElementById('page-container');
+  const pages = Array.from(pc.querySelectorAll('.pf'));
+  const frames = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+  // Wait for any scroll the last action started to finish. A smooth scroll
+  // can begin a few frames late, so give it a moment to start, then wait for
+  // scrollend (with a ceiling), then for the trackers' next frame.
+  let scrolling = false;
+  pc.addEventListener('scroll', () => { scrolling = true; }, { passive: true });
+  pc.addEventListener('scrollend', () => { scrolling = false; });
+  const settle = async () => {
+    const start = performance.now();
+    while (!scrolling && performance.now() - start < 250) await frames();
+    const deadline = performance.now() + 5000;
+    while (scrolling && performance.now() < deadline) await frames();
+    scrolling = false;
+    await frames();
+  };
+  window.__probe = {
+    pc,
+    pages,
+    frames,
+    settle,
+    page(n) { return document.getElementById('pf' + n.toString(16)); },
+    pageTop(pf) { return pf.getBoundingClientRect().top - pc.getBoundingClientRect().top; },
+    anchor() {
+      const top = pc.getBoundingClientRect().top;
+      for (const pf of pages) {
+        const r = pf.getBoundingClientRect();
+        if (r.bottom > top) return { id: pf.id, frac: (top - r.top) / r.height };
+      }
+      return null;
+    },
+    mostVisible() {
+      const box = pc.getBoundingClientRect();
+      let best = -1, bestO = -1;
+      pages.forEach((pf, i) => {
+        const r = pf.getBoundingClientRect();
+        const o = Math.min(r.bottom, box.bottom) - Math.max(r.top, box.top);
+        if (o > bestO) { bestO = o; best = i; }
+      });
+      return best + 1;
+    },
+    scrollToPage(n, frac) {
+      const pf = this.page(n);
+      pc.scrollTop += this.pageTop(pf) + (frac || 0) * pf.getBoundingClientRect().height;
+    },
+    // Screen y (relative to the viewport top) of a pdf2htmlEX link's XYZ
+    // destination, or null when it has none.
+    destY(a) {
+      const v = window.pdf2htmlEX.defaultViewer;
+      let dest;
+      try { dest = JSON.parse(a.getAttribute('data-dest-detail')); } catch (e) { return null; }
+      if (!Array.isArray(dest) || dest[1] !== 'XYZ' || typeof dest[3] !== 'number') return null;
+      const idx = v.page_map[dest[0]];
+      if (idx === undefined) return null;
+      const pg = v.pages[idx];
+      const r = pg.page.getBoundingClientRect();
+      const toScreen = r.height / pg.page.offsetHeight;   // page-local px -> screen px
+      const x = dest[2] === null ? 0 : dest[2];
+      const localY = pg.height() - (pg.ctm[1] * x + pg.ctm[3] * dest[3] + pg.ctm[5]);
+      return {
+        page: pg.page.id,
+        y: r.top + localY * toScreen - pc.getBoundingClientRect().top,
+        atEnd: pc.scrollTop >= pc.scrollHeight - pc.clientHeight - 1,
+      };
+    },
+    outlineLinks() { return Array.from(document.querySelectorAll('#outline a.l[data-dest-detail]')); },
+    activeOutline() { return Array.from(document.querySelectorAll('#outline a.pdf2html-active')); },
+    zoomVar() { return parseFloat(getComputedStyle(pc).getPropertyValue('--pdf2html-zoom')); },
+    clips: [],
+  };
+  // Record clipboard writes: headless Chromium does not hand them back.
+  const write = navigator.clipboard.writeText.bind(navigator.clipboard);
+  navigator.clipboard.writeText = (t) => { window.__probe.clips.push(t); return write(t).catch(() => {}); };
+}
+
+async function main() {
+  const browser = await chromium.launch({ headless: true });
+  const context = await browser.newContext({ viewport: VIEWPORT });
+  await context.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: BASE });
+  const page = await context.newPage();
+  const errors = [];
+  page.on('pageerror', (err) => errors.push(err.message));
+  page.on('console', (msg) => { if (msg.type() === 'error') errors.push(msg.text()); });
+
+  const probe = (fn, arg) => page.evaluate(fn, arg);
+  const settle = () => probe(() => window.__probe.settle());
+
+  async function load({ reset = false, prefs = {} } = {}) {
+    total = 0;
+    if (reset) {
+      await page.goto(BASE + '/healthz');
+      await page.evaluate((p) => {
+        localStorage.clear();
+        for (const [k, v] of Object.entries(p)) localStorage.setItem(k, v);
+      }, prefs);
+    }
+    const resp = await page.goto(URL, { waitUntil: 'load', timeout: 60000 });
+    if (!resp || !resp.ok()) throw new Error(`viewer did not load: ${URL}`);
+    await page.waitForSelector('#pdf2html-pageno-current', { state: 'attached', timeout: 30000 });
+    await page.waitForFunction(() => window.pdf2htmlEX && window.pdf2htmlEX.defaultViewer
+      && document.getElementById('page-container').style.getPropertyValue('--pdf2html-zoom'),
+      null, { timeout: 30000, polling: 100 });
+    await page.evaluate(installProbe);
+    total = await probe(() => window.__probe.pages.length);
+    await settle();
+    await page.waitForTimeout(300);
+  }
+  async function blurToDocument() {
+    await probe(() => {
+      if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+      getSelection().removeAllRanges();
+    });
+  }
+  async function palette(text) {
+    await blurToDocument();
+    await page.keyboard.press(':');
+    await page.waitForSelector('#pdf2html-palette-input', { timeout: 3000 });
+    await page.keyboard.type(text);
+    await page.keyboard.press('Enter');
+    await page.waitForTimeout(150);
+    await settle();
+  }
+  const run = (group) => !only || only.has(group);
+  // Test pages scale with the document so short papers and long books both
+  // work: pick(n) is n clamped to the document, minus a margin at the end.
+  let total = 0;
+  const pick = (n, margin = 3) => Math.max(2, Math.min(n, total - margin));
+
+  // ===================================================================== geometry
+  if (run('geometry')) {
+    await load({ reset: true });
+    const placement = await probe(() => {
+      const p = window.__probe;
+      return {
+        scrollerZoom: getComputedStyle(p.pc).zoom,
+        pageZoom: getComputedStyle(p.pages[0]).zoom,
+        clientHeight: p.pc.clientHeight,
+        boxHeight: p.pc.getBoundingClientRect().height,
+      };
+    });
+    record('scroller carries no zoom', placement.scrollerZoom === '1',
+      `#page-container zoom=${placement.scrollerZoom}, .pf zoom=${placement.pageZoom}`);
+    record('scroller clientHeight is screen px', near(placement.clientHeight, placement.boxHeight, 1),
+      `clientHeight=${placement.clientHeight}, visible height=${placement.boxHeight}`);
+
+    await probe(() => window.__probe.scrollToPage(2, 0.2));
+    const steps = await probe(async () => {
+      const p = window.__probe;
+      const pf = p.page(3);
+      const a = pf.getBoundingClientRect().top;
+      p.pc.scrollBy({ top: 60, behavior: 'instant' });
+      await p.frames();
+      const b = pf.getBoundingClientRect().top;
+      p.pc.scrollBy({ top: 0.5 * p.pc.clientHeight, behavior: 'instant' });
+      await p.frames();
+      const c = pf.getBoundingClientRect().top;
+      return { j: a - b, d: b - c, half: p.pc.getBoundingClientRect().height / 2 };
+    });
+    record('j step (scrollBy 60) moves 60 screen px', near(steps.j, 60), `moved ${steps.j.toFixed(1)} px`);
+    record('d step (half clientHeight) moves half the viewport', near(steps.d, steps.half),
+      `moved ${steps.d.toFixed(1)} px of ${steps.half.toFixed(1)} px`);
+
+    const links = await probe(async () => {
+      const p = window.__probe;
+      const out = [];
+      for (const a of p.pc.querySelectorAll('a.l[data-dest-detail]')) {
+        if (out.length >= 4) break;
+        if (!p.destY(a)) continue;
+        p.pc.scrollTop = 0;
+        await p.frames();
+        a.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+        await p.frames();
+        out.push(p.destY(a));
+      }
+      history.replaceState(null, '', location.pathname);
+      return out;
+    });
+    if (!links.length) record('internal links land at viewport top', true, 'skipped: no XYZ links');
+    else {
+      const bad = links.filter((l) => !l.atEnd && !near(l.y, 0, 2));
+      record('internal links land at viewport top', bad.length === 0,
+        links.map((l) => `${l.page}:${l.y.toFixed(1)}`).join(' '));
+    }
+
+    await probe(() => window.__probe.scrollToPage(4, 0.6));
+    await page.waitForTimeout(200);
+    const current = await probe(() => ({
+      runtime: window.pdf2htmlEX.defaultViewer.cur_page_idx + 1,
+      overlap: window.__probe.mostVisible(),
+      counter: +document.getElementById('pdf2html-pageno-current').textContent,
+    }));
+    record('pdf2htmlEX current page matches viewport overlap', current.runtime === current.overlap,
+      `runtime=${current.runtime}, overlap=${current.overlap}`);
+
+    const zoomCase = async (label, act) => {
+      await probe(() => window.__probe.scrollToPage(5, 0.37));
+      await settle();
+      const a = await probe(() => window.__probe.anchor());
+      await act();
+      await page.waitForTimeout(250);
+      await settle();
+      const b = await probe(() => window.__probe.anchor());
+      const ok = a && b && a.id === b.id && Math.abs(a.frac - b.frac) < 0.01;
+      record(`${label} keeps reading position`, ok,
+        `${a && a.id}@${a && a.frac.toFixed(3)} -> ${b && b.id}@${b && b.frac.toFixed(3)}`);
+    };
+    await zoomCase(':zoom 1.2', () => palette('zoom 1.2'));
+    record(':zoom 1.2 applies the zoom', near(await probe(() => window.__probe.zoomVar()), 1.2, 0.001));
+    await zoomCase(':zoom auto', () => palette('zoom auto'));
+    const autoZoom = await probe(() => window.__probe.zoomVar());
+    await zoomCase('Cmd+= (pdf2htmlEX rescale key)', async () => { await blurToDocument(); await page.keyboard.press('Meta+Equal'); });
+    const plus = await probe(() => ({ z: window.__probe.zoomVar(), scale: window.pdf2htmlEX.defaultViewer.scale }));
+    record('Cmd+= raises the one page zoom', plus.z > autoZoom + 0.01 && plus.scale === 1,
+      `zoom ${autoZoom.toFixed(3)} -> ${plus.z.toFixed(3)}, pdf2htmlEX scale ${plus.scale}`);
+    await zoomCase('Cmd+0 (back to auto-fit)', async () => { await page.keyboard.press('Meta+Digit0'); });
+    record('Cmd+0 restores auto-fit', near(await probe(() => window.__probe.zoomVar()), autoZoom, 0.001));
+    await zoomCase('window resize (auto)', () => page.setViewportSize({ width: 1100, height: 1000 }));
+    await page.setViewportSize(VIEWPORT);
+    await page.waitForTimeout(250);
+
+    await page.keyboard.press('Meta+b');
+    await page.waitForTimeout(900);
+    const shift = await probe(() => {
+      const sb = document.getElementById('sidebar').getBoundingClientRect();
+      const pf = window.__probe.pages[0].getBoundingClientRect();
+      return {
+        shown: document.body.classList.contains('sidebar-shown'),
+        shifted: document.body.classList.contains('pdf2html-page-shifted'),
+        gap: pf.left - sb.right,
+      };
+    });
+    if (!shift.shown) record('sidebar shift leaves 14 px gutter', false, 'sidebar did not open');
+    else if (!shift.shifted) record('sidebar shift leaves 14 px gutter', shift.gap >= 14 - TOL, `no shift needed, gap ${shift.gap.toFixed(1)} px`);
+    else record('sidebar shift leaves 14 px gutter', near(shift.gap, 14), `gap ${shift.gap.toFixed(1)} px`);
+  }
+
+  // =================================================================== navigation
+  if (run('navigation')) {
+    await load({ reset: true });
+    const pageTop = (n) => probe((k) => window.__probe.pageTop(window.__probe.page(k)), n);
+
+    const p1 = pick(42, 5);
+    await palette(String(p1));
+    record(`:${p1} lands the page top at the lead`, near(await pageTop(p1), PAGE_LEAD), `top ${(await pageTop(p1)).toFixed(1)} px`);
+
+    await palette('mark a');
+    await palette(String(pick(120, 1)));
+    await palette('jump a');
+    record(':jump returns to the marked page', near(await pageTop(p1), PAGE_LEAD),
+      `top ${(await pageTop(p1)).toFixed(1)} px, marks ${await probe(() => JSON.stringify(Object.keys(localStorage).filter((k) => k.startsWith('pdf2html-marks')).map((k) => localStorage.getItem(k))))}`);
+
+    await blurToDocument();
+    await page.keyboard.press('e');
+    await settle();
+    record('e lands the next page at the lead', near(await pageTop(p1 + 1), PAGE_LEAD), `top ${(await pageTop(p1 + 1)).toFixed(1)} px`);
+    await page.keyboard.press('3');
+    await page.keyboard.press('q');
+    await settle();
+    record('3q steps back three pages', near(await pageTop(p1 - 2), PAGE_LEAD), `top ${(await pageTop(p1 - 2)).toFixed(1)} px`);
+
+    // Chapter navigation lands on the outline destination.
+    const chapter = await probe(() => {
+      const p = window.__probe;
+      const links = p.outlineLinks();
+      return links.length > 3 ? { idx: Math.floor(links.length / 2), text: links[Math.floor(links.length / 2)].textContent.trim() } : null;
+    });
+    if (chapter) {
+      await palette('chapter ' + chapter.text);
+      const hit = await probe((i) => window.__probe.destY(window.__probe.outlineLinks()[i]), chapter.idx);
+      record(':chapter lands its heading at the viewport top', hit && (hit.atEnd || near(hit.y, 0, 2)),
+        hit ? `${hit.page} destination at ${hit.y.toFixed(1)} px` : 'no destination');
+      await blurToDocument();
+      await page.keyboard.press('c');
+      await settle();
+      const next = await probe((i) => {
+        const p = window.__probe;
+        const links = p.outlineLinks();
+        const cur = links[i];
+        const curPage = parseInt(cur.getAttribute('href').slice(3), 16);
+        const nxt = links.slice(i + 1).find((a) => parseInt(a.getAttribute('href').slice(3), 16) > curPage);
+        return nxt ? p.destY(nxt) : null;
+      }, chapter.idx);
+      record('c lands the next chapter heading at the viewport top', !next || next.atEnd || near(next.y, 0, 2),
+        next ? `${next.page} destination at ${next.y.toFixed(1)} px` : 'no later chapter');
+
+      await page.keyboard.press('Meta+k');
+      await page.waitForSelector('#pdf2html-finder-input');
+      await page.keyboard.type(chapter.text);
+      await page.keyboard.press('Enter');
+      await page.waitForTimeout(150);
+      await settle();
+      const finderHit = await probe((i) => window.__probe.destY(window.__probe.outlineLinks()[i]), chapter.idx);
+      record('Cmd-K outline pick lands its heading at the viewport top', finderHit && (finderHit.atEnd || near(finderHit.y, 0, 2)),
+        finderHit ? `${finderHit.page} destination at ${finderHit.y.toFixed(1)} px` : 'no destination');
+    }
+
+    // Resume: leave the reader on a page, reload, expect that page at the lead.
+    const p3 = pick(77, 3);
+    await palette(String(p3));
+    await page.waitForTimeout(700);
+    await load();
+    await page.waitForTimeout(300);
+    record('reload resumes the saved page at the lead', near(await pageTop(p3), PAGE_LEAD), `p.${p3} top ${(await pageTop(p3)).toFixed(1)} px`);
+  }
+
+  // ====================================================================== sidebar
+  if (run('sidebar')) {
+    await load({ reset: true });
+    await page.keyboard.press('Meta+b');
+    await page.waitForTimeout(500);
+    const hasOutline = (await probe(() => window.__probe.outlineLinks().length)) > 2;
+    // Outline tab: Ctrl-j twice, Enter.
+    await page.keyboard.press('h');
+    await page.keyboard.press('Control+j');
+    await page.keyboard.press('Control+j');
+    const selected = await probe(() => {
+      const s = document.querySelector('#outline a.pdf2html-selected');
+      return s ? window.__probe.outlineLinks().indexOf(s) : -1;
+    });
+    await page.keyboard.press('Enter');
+    await page.waitForTimeout(150);
+    await settle();
+    const outlineCommit = await probe((i) => {
+      const p = window.__probe;
+      const link = p.outlineLinks()[i];
+      return { dest: link ? p.destY(link) : null, active: p.activeOutline().map((a) => a.textContent.trim()) };
+    }, selected);
+    if (!hasOutline) {
+      record('outline Enter lands the entry heading at the viewport top', true, 'skipped: no outline');
+    } else {
+      record('outline Enter lands the entry heading at the viewport top',
+        !!outlineCommit.dest && (outlineCommit.dest.atEnd || near(outlineCommit.dest.y, 0, 2)),
+        outlineCommit.dest ? `${outlineCommit.dest.page} destination at ${outlineCommit.dest.y.toFixed(1)} px` : `selected index ${selected}`);
+      record('exactly one outline row is active', outlineCommit.active.length === 1, JSON.stringify(outlineCommit.active));
+    }
+
+    // Thumbnails tab: from the current page, Ctrl-j twice, Enter.
+    await page.keyboard.press('l');
+    await page.waitForTimeout(200);
+    const start = await probe(() => window.__probe.mostVisible());
+    await page.keyboard.press('Control+j');
+    await page.keyboard.press('Control+j');
+    await page.keyboard.press('Enter');
+    await page.waitForTimeout(150);
+    await settle();
+    const thumbTop = await probe((n) => window.__probe.pageTop(window.__probe.page(n)), start + 2);
+    record('thumbnail Enter lands the page at the lead', near(thumbTop, PAGE_LEAD), `p.${start + 2} top ${thumbTop.toFixed(1)} px`);
+
+    const thumbPage = pick(9, 3);
+    await probe((n) => document.querySelector(`.pdf2html-thumb[data-page="${n}"]`).click(), thumbPage);
+    await page.waitForTimeout(150);
+    await settle();
+    const clickTop = await probe((n) => window.__probe.pageTop(window.__probe.page(n)), thumbPage);
+    record('thumbnail click lands the page at the lead', near(clickTop, PAGE_LEAD), `p.${thumbPage} top ${clickTop.toFixed(1)} px`);
+
+    // A plain scroll afterwards still drives a single active outline row.
+    await probe((n) => window.__probe.scrollToPage(n, 0.1), pick(200, 1));
+    await page.waitForTimeout(300);
+    const afterScroll = await probe(() => window.__probe.activeOutline().length);
+    if (hasOutline) record('outline highlight stays single after scrolling', afterScroll === 1, `${afterScroll} active`);
+
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(200);
+    record('Esc closes the sidebar', !(await probe(() => document.body.classList.contains('sidebar-shown'))));
+  }
+
+  // ===================================================================== commands
+  if (run('commands')) {
+    await load({ reset: true });
+    await palette('pin');
+    const pin = await probe(() => ({
+      stored: localStorage.getItem('pdf2html-pinned'),
+      css: document.getElementById('page-container').style.getPropertyValue('--pdf2html-scrolloff'),
+    }));
+    record(':pin toggles pin-to-center off', pin.stored === '0' && pin.css.trim() === '25%', JSON.stringify(pin));
+    await palette('so 10');
+    const so = await probe(() => ({
+      stored: localStorage.getItem('pdf2html-scrolloff'),
+      css: document.getElementById('page-container').style.getPropertyValue('--pdf2html-scrolloff'),
+    }));
+    record(':so 10 sets the scrolloff band', so.stored === '0.1' && so.css.trim() === '10%', JSON.stringify(so));
+    await palette('counter');
+    record(':counter shows the page counter', !(await probe(() => document.body.classList.contains('pageno-hidden'))));
+    await palette('case');
+    record(':case turns case-sensitive search on', (await probe(() => localStorage.getItem('pdf2html-search-case'))) === '1');
+    await palette('zoom 1.5');
+    await load();
+    record(':zoom persists per document', near(await probe(() => window.__probe.zoomVar()), 1.5, 0.001));
+
+    const yankPage = pick(30, 2);
+    await probe((n) => window.__probe.scrollToPage(n, 0.2), yankPage);
+    await page.waitForTimeout(300);
+    await palette('yank ref');
+    const clip = await probe(() => window.__probe.clips.slice(-1)[0] || '');
+    record(':yank ref copies chapter and page', clip.endsWith('p. ' + yankPage), JSON.stringify(clip));
+
+    // Settings modal reflects and edits the same preferences.
+    await blurToDocument();
+    await page.keyboard.press('Meta+Comma');
+    await page.waitForSelector('#pdf2html-settings');
+    const settings = await probe(() => ({
+      zoom: document.querySelector('#pdf2html-settings input[type=range]').value,
+      switches: Array.from(document.querySelectorAll('#pdf2html-settings .pdf2html-switch')).map((s) => s.getAttribute('aria-checked')),
+    }));
+    record('settings show the effective zoom', settings.zoom === '1.5', JSON.stringify(settings));
+    await probe(() => {
+      const rows = Array.from(document.querySelectorAll('#pdf2html-settings .pdf2html-settings-row'));
+      const row = rows.find((r) => /Case-sensitive/.test(r.textContent));
+      row.querySelector('.pdf2html-switch').click();
+    });
+    record('settings switch writes the preference', (await probe(() => localStorage.getItem('pdf2html-search-case'))) === '0');
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(150);
+    record('Esc closes settings', !(await probe(() => !!document.getElementById('pdf2html-settings'))));
+
+    // Cheatsheet lists every palette command and no removed ones.
+    await page.keyboard.press('?');
+    await page.waitForSelector('#pdf2html-cheatsheet');
+    const sheet = await probe(() => document.getElementById('pdf2html-cheatsheet').textContent);
+    const names = ['page', 'chapter', 'next', 'prev', 'mark', 'jump', 'clear', 'open', 'rename', 'path',
+      'disable', 'delete', 'pin', 'scrolloff', 'yank', 'finger', 'counter', 'case', 'zoom', 'set', 'help'];
+    const missing = names.filter((n) => sheet.indexOf(':' + n) === -1);
+    const stale = [':buffer', ':all', 'render-all'].filter((s) => sheet.indexOf(s) !== -1);
+    record('cheatsheet lists every command', missing.length === 0, missing.length ? `missing ${missing.join(' ')}` : '');
+    record('cheatsheet lists no removed commands', stale.length === 0, stale.join(' '));
+    await page.keyboard.press('Escape');
+  }
+
+  // ======================================================================= search
+  if (run('search')) {
+    await load({ reset: true, prefs: { 'pdf2html-pinned': '0', 'pdf2html-scrolloff': '0.25' } });
+    const word = await probe(async (n) => {
+      const p = window.__probe;
+      const lines = Array.from(p.page(n).querySelectorAll('.t'));
+      const t = lines.find((e) => /[A-Za-zæøå]{7,}/.test(e.textContent));
+      const w = t.textContent.match(/[A-Za-zæøå]{7,}/)[0];
+      p.pc.scrollTop += t.getBoundingClientRect().top - p.pc.getBoundingClientRect().top - (p.pc.clientHeight - 40);
+      await p.settle();
+      return w;
+    }, pick(14, 1));
+    await blurToDocument();
+    await page.keyboard.press('/');
+    await page.waitForSelector('#pdf2html-search-input');
+    await page.keyboard.type(word);
+    await page.keyboard.press('Enter');
+    await page.waitForTimeout(150);
+    await settle();
+    const hit = await probe(() => {
+      const pc = window.__probe.pc;
+      const sel = getSelection();
+      const r = sel.rangeCount ? sel.getRangeAt(0).getBoundingClientRect() : null;
+      return { y: r && r.top - pc.getBoundingClientRect().top, h: pc.clientHeight, text: sel.toString() };
+    });
+    record('search Enter selects a hit inside the scrolloff band',
+      hit.y !== null && hit.y >= hit.h * 0.25 - 2 && hit.y <= hit.h * 0.75 + 2,
+      `"${hit.text}" at ${hit.y && hit.y.toFixed(1)} of ${hit.h}`);
+    await page.keyboard.press('n');
+    await settle();
+    const count = await probe(() => {
+      const el = document.getElementById('pdf2html-search-count');
+      return { text: getSelection().toString(), entered: document.body.classList.contains('pdf2html-search-entered') };
+    });
+    record('n moves to another hit', count.entered && count.text.toLowerCase() === word.toLowerCase(), JSON.stringify(count));
+    await page.keyboard.press('Escape');
+  }
+
+  record('no page errors', errors.length === 0, errors.slice(0, 3).join(' | '));
+  await browser.close();
+}
+
+// A wedged page must fail the run, not hang it.
+const HARNESS_TIMEOUT_MS = 5 * 60 * 1000;
+setTimeout(() => {
+  record('harness finished in time', false, `no result after ${HARNESS_TIMEOUT_MS / 1000}s`);
+  console.log('verify-overlay: FAIL — timed out');
+  process.exit(1);
+}, HARNESS_TIMEOUT_MS).unref();
+
+main()
+  .catch((err) => record('harness ran to completion', false, err.stack || String(err)))
+  .finally(() => {
+    const failed = results.filter((r) => !r.ok).length;
+    console.log(`verify-overlay: ${failed ? 'FAIL' : 'PASS'} — ${results.length - failed}/${results.length} checks`);
+    process.exitCode = failed ? 1 : 0;
+  });

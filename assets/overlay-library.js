@@ -81,34 +81,43 @@ export function createLibrary(core) {
         }
         return '';
     }
-    function disableCurrent() {
-        var hash = entryHash(); if (!hash) return;
-        fetch('/entry/' + encodeURIComponent(hash) + '/disabled', {
-            method: 'PUT', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ disabled: true, current_url: location.href }),
-        }).then(function (r) { return r.json().then(function (j) { return { ok: r.ok, body: j }; }, function () { return { ok: r.ok, body: null }; }); })
-          .then(function (resp) {
-              if (!resp.ok) { console.warn('[disable]', resp.body && resp.body.detail ? String(resp.body.detail) : 'native fallback failed'); return; }
-              var info = resp.body || {}, target = info.target_url || info.native_browser_url || info.native_url;
-              if (!target) return;
-              if (info.extension_navigation_queued) { setTimeout(function () { if (location.href !== target) location.replace(target); }, 3000); return; }
-              location.replace(target);
-          }).catch(function (e) { console.warn('[disable] failed:', e); });
+    // PUT a JSON body to a daemon entry route. Resolves with the parsed
+    // response body, or null after logging the daemon's error detail.
+    function putEntry(route, payload, label) {
+        var hash = entryHash();
+        if (!hash) return Promise.resolve(null);
+        return fetch('/entry/' + encodeURIComponent(hash) + route, {
+            method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+        }).then(function (r) {
+            return r.json().catch(function () { return null; }).then(function (body) {
+                if (r.ok) return body || {};
+                console.warn('[' + label + ']', body && body.detail ? String(body.detail) : 'HTTP ' + r.status);
+                return null;
+            });
+        }).catch(function (e) { console.warn('[' + label + '] failed:', e); return null; });
     }
-    function truncateMiddle(s, max) {
-        var v = String(s || ''); if (!v || v.length <= max) return v;
-        var keep = max - 1, head = Math.ceil(keep / 2); return v.slice(0, head) + '…' + v.slice(v.length - (keep - head));
+    function disableCurrent() {
+        putEntry('/disabled', { disabled: true, current_url: location.href }, 'disable').then(function (info) {
+            var target = info && (info.target_url || info.native_browser_url || info.native_url);
+            if (!target) return;
+            // The extension may navigate the tab itself; fall back if it hasn't.
+            if (info.extension_navigation_queued) {
+                setTimeout(function () { if (location.href !== target) location.replace(target); }, 3000);
+                return;
+            }
+            location.replace(target);
+        });
     }
     function renameCurrent(newName) {
-        var hash = entryHash(), name = String(newName || '').trim(); if (!hash || !name) return;
-        fetch('/entry/' + encodeURIComponent(hash) + '/name', {
-            method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: name }),
-        }).then(function (r) { return r.json().then(function (j) { return { ok: r.ok, body: j }; }, function () { return { ok: r.ok, body: null }; }); })
-          .then(function (resp) {
-              if (!resp.ok) { console.warn('[rename]', resp.body && resp.body.detail ? String(resp.body.detail) : 'rename failed'); return; }
-              var info = resp.body || {}; document.title = info.new_name || name; entries = null; load();
-              if (info.href) try { history.replaceState({}, '', info.href); } catch (_) {}
-          }).catch(function (e) { console.warn('[rename] failed:', e); });
+        var name = String(newName || '').trim();
+        if (!name) return;
+        putEntry('/name', { name: name }, 'rename').then(function (info) {
+            if (!info) return;
+            document.title = info.new_name || name;
+            entries = null;
+            load();
+            if (info.href) try { history.replaceState(null, '', info.href); } catch (_) {}
+        });
     }
     function deleteCurrent() {
         var hash = entryHash(); if (!hash) return;
@@ -126,5 +135,5 @@ export function createLibrary(core) {
     return { load: load, all: all, recencyLabel: recencyLabel, searchText: searchText,
         isCurrent: isCurrent, complete: complete, open: open,
         currentName: currentName, currentSourceRef: currentSourceRef, disableCurrent: disableCurrent,
-        truncateMiddle: truncateMiddle, renameCurrent: renameCurrent, deleteCurrent: deleteCurrent };
+        renameCurrent: renameCurrent, deleteCurrent: deleteCurrent };
 }

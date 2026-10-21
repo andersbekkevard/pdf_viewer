@@ -14,6 +14,7 @@
  *   - overlay booted: #pdf2html-pageno-current present, sidebar DOM present
  *   - pdf2htmlEX render loop killed: defaultViewer.render_timer === null
  *   - native find works: window.find('Normal') === true
+ *   - plain spacer spans retain a visible word gap
  *   - zero console errors, zero failed /_assets/ requests
  */
 'use strict';
@@ -109,7 +110,7 @@ function fail(msg) {
       fail(
         `pdf2htmlEX render loop not killed: render_timer === ${JSON.stringify(
           renderTimer
-        )} (expected null — check killPdf2htmlExRenderLoop in overlay.js)`
+        )} (expected null — check killPdf2htmlExRenderLoop in overlay-pdf2htmlex.js)`
       );
     }
 
@@ -117,6 +118,27 @@ function fail(msg) {
     const found = await page.evaluate((word) => window.find(word), KNOWN_WORD);
     if (found !== true) {
       fail(`window.find('${KNOWN_WORD}') returned ${JSON.stringify(found)} (expected true)`);
+    }
+
+    // Some pdf2htmlEX documents represent word gaps as a literal space in a
+    // plain <span class="_">, without a companion width utility class. The
+    // native-find boundary fix must keep that space's glyph width while it
+    // converts width-bearing spacer classes to padding.
+    const plainSpacerWidth = await page.evaluate(() => {
+      const host = document.createElement('div');
+      host.style.cssText =
+        'position:absolute;left:-10000px;top:0;font:16px serif;white-space:pre';
+      const spacer = document.createElement('span');
+      spacer.className = '_';
+      spacer.textContent = ' ';
+      host.appendChild(spacer);
+      document.body.appendChild(host);
+      const width = spacer.getBoundingClientRect().width;
+      host.remove();
+      return width;
+    });
+    if (!(plainSpacerWidth > 0)) {
+      fail(`plain spacer span collapsed to ${plainSpacerWidth}px (expected a visible word gap)`);
     }
 
     // --- console errors / failed asset requests ---------------------------
@@ -137,7 +159,8 @@ function fail(msg) {
   } else {
     console.log(
       `smoke-viewer: PASS — ${EXPECTED_PF} page, overlay booted, render loop killed, ` +
-        `find('${KNOWN_WORD}') ok, 0 console errors, 0 failed /_assets/ requests`
+        `find('${KNOWN_WORD}') ok, plain spacer visible, 0 console errors, ` +
+        `0 failed /_assets/ requests`
     );
   }
 })();

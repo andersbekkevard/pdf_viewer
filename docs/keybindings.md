@@ -1,8 +1,9 @@
 # Keybindings
 
 The overlay's full key + palette contract. The `?` cheatsheet in the
-viewer is the live reference; this doc adds the rationale — especially
-*what we deliberately don't bind* and why.
+viewer is the live reference (its command list is generated from the
+palette's `COMMANDS` table in `assets/overlay-commands.js`); this doc adds
+the rationale — especially *what we deliberately don't bind* and why.
 
 For the rationale on the overall keyboard strategy, see
 [ADR 0003](adr/0003-keyboard-shortcuts-vimium-coexistence.md).
@@ -16,15 +17,20 @@ For the rationale on the overall keyboard strategy, see
 | `Ctrl-f`               | Finger visible URL / DOI / ISBN / long-ID tokens              |
 | `/` · `s`              | Find in visible pages (Enter jump, `n` / `N` cycle)           |
 | `←` / `→` · `h` / `l`  | Switch sidebar tab (Outline / Pages) — only when sidebar open |
-| `A`                    | Toggle render-all pages                                       |
 | `e` / `q` / `E`        | Next / prev page; active text selection extends pagewise instead; `q` aliases `E`; count-prefixed (`10e` = +10, `10q` = `10E` = −10) |
 | `c` / `C`              | Next / prev chapter; active browser selection + `c` selects the whole chapter; count-prefixed (`3c` = +3, `3C` = −3)    |
+| `⌘+` / `⌘−` / `⌘0`     | Zoom in / out (manual, per document) / back to fit-width      |
 | `⌘⇧.`                  | Toggle page counter                                           |
 | `:`                    | Open command palette                                          |
-| `⌘K`                   | Library picker (palette pre-seeded with `:open `)             |
+| `⌘K`                   | Quick-open: outline sections, other cached documents, commands |
 | `⌘,`                   | Open settings (intercepts browser preferences shortcut)       |
 | `?`                    | Toggle cheatsheet (needs Vimium `?` disabled for `localhost:7435`) |
-| `Esc`                  | Close palette → close cheatsheet → clear selection            |
+| `Esc`                  | Close finder / palette → finger mode → settings → cheatsheet → sidebar → clear selection |
+
+Jumps land consistently. Page jumps (`:42`, `e` / `q`, marks, thumbnails,
+resume) put the page top 8 px below the viewport top. Chapter jumps
+(outline clicks and `Enter`, `:chapter`, `c` / `C`, ⌘K sections) go to the
+outline entry's destination, so its heading sits at the viewport top.
 
 Bare `Tab` is not a viewer command. On the PDF document surface it is
 intentionally ignored so browser focus traversal does not jump between pages;
@@ -36,7 +42,7 @@ cycling.
 | Command                      | Action                                                                           |
 |------------------------------|----------------------------------------------------------------------------------|
 | `:42`                        | Goto page 42                                                                     |
-| `:p 42`                      | Alias for `:42`                                                                  |
+| `:page 42` / `:p 42`         | Same as `:42`                                                                    |
 | `:chapter <name>`            | Jump to outline chapter; Tab completes against sidebar (case-insensitive substring) |
 | `:next` / `:prev`            | Next / previous chapter (or reset to current-chapter start if deep into it)      |
 | `:mark <a-z>`                | Persistent bookmark of current page (localStorage, per hash)                     |
@@ -48,8 +54,9 @@ cycling.
 | `:disable` / `:native`       | Open this PDF in the native browser PDF viewer and disable custom-viewer redirects for this entry |
 | `:pin`                       | Toggle pin-to-center                                                             |
 | `:scrolloff 25` / `:so 25`   | Set scrolloff band to 25 % (0–50)                                                |
-| `:buffer 20` / `:buf 20`     | Set render buffer to ±20 pages                                                   |
-| `:all`                       | Toggle render-all                                                                |
+| `:case`                      | Toggle case-sensitive `/` search                                                 |
+| `:zoom N` / `:zoom auto`     | Manual page zoom for this document, or back to fit-width                         |
+| `:delete confirm`            | Wipe this PDF's cache entry and open the original                                |
 | `:yank <kind>` / `:y <kind>` | `ref` (default, "Chapter · p. N") · `page` · `chapter` · `document`              |
 | `:finger` / `:f`             | Hint visible URL / DOI / ISBN / long-ID tokens; exact hint copies token          |
 | `:counter` / `:num`          | Toggle page counter                                                              |
@@ -89,8 +96,8 @@ never become overlay shortcuts.
 - `go` — contains `o`
 - `g?` — `?` is handled by our listener; Vimium's `?` is disabled via
   exclusion rule
-- `g<letter>` for toggles — "wrong letter family"; `A` is the pattern
-  we use instead
+- `g<letter>` for toggles — "wrong letter family"; toggles live in the
+  palette instead
 
 When tempted to add a new keybinding, add a palette command instead.
 That's the escape hatch.

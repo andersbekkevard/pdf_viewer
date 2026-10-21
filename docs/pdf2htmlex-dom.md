@@ -115,6 +115,12 @@ parseInt(el.id.match(/pf([0-9a-f]+)/i)[1], 16)
 Every text run. Absolutely positioned inside `.pc`. Text is the `textContent`
 of the div (may include `<span>` children for inline style changes).
 
+Inter-word and intra-word gaps may be wrapped in spacer spans. Width-bearing
+spacers use a base `._` class plus a utility class such as `._0`, but some PDF
+producers emit a literal word gap as `<span class="_"> </span>` with no width
+class. Overlay code must not assume every spacer has utility-class geometry or
+collapse the literal space in a plain spacer.
+
 The class-word salad is pdf2htmlEX's utility-class system (see below). For
 our purposes, `.t` elements are:
 
@@ -221,17 +227,39 @@ The only time they matter is if you're building a selector like
 | Global | Purpose |
 |---|---|
 | `window.pdf2htmlEX` | Namespace. We don't touch it. |
-| `window.pdf2htmlEX.defaultViewer` | The runtime instance. We neutralize its `render_timer` and replace `.render` with a no-op on load — see ADR 0002 and `killPdf2htmlExRenderLoop` in overlay.js. |
+| `window.pdf2htmlEX.defaultViewer` | The runtime instance, adapted in `assets/overlay-pdf2htmlex.js`: its render loop (`render`, `schedule_render`, `render_timer`) is neutralized on load (ADR 0002); `view_position`, `scroll_to` and `cur_page_idx` are rebuilt for per-page zoom, and `rescale` (Ctrl/Cmd +/−/0) drives the overlay zoom (ADR 0012); `link_handler` is reused for outline/chapter jumps. Its window `keydown` handler still runs, but keys typed in overlay text fields stop at the document. |
+
+## Zoom and scroll geometry
+
+The overlay's zoom is `--pdf2html-zoom` on `#page-container`, applied as CSS
+`zoom` on each `#page-container > .pf` (ADR 0012). The scroller itself is never
+zoomed. That gives two coordinate spaces:
+
+- **Scroller coordinates are screen px.** `pc.scrollTop`, `scrollBy`,
+  `clientHeight` and every `getBoundingClientRect` agree. Vimium's `j`/`d`
+  depend on this.
+- **A page's own `offsetTop`/`offsetHeight`/`offsetWidth` are page-local
+  units**, i.e. screen px divided by the zoom. They are useful only for a
+  page's native size. Never combine them with scroller offsets.
+
+Feature code gets page positions from the document model
+(`assets/overlay-document.js`): `pageExtent(pf)` for a page's span in scroller
+coordinates, `scrollToPage(pf, lead)` to put a page `lead` px below the
+viewport top, `mostVisiblePage()` for the page covering most of the viewport,
+and `viewAnchor()`/`restoreViewAnchor()` to keep the reading position across
+a rescale. Lengths applied inside a page (e.g. the sidebar shift's
+`translateX`) are multiplied by the zoom, so CSS divides them by
+`--pdf2html-zoom`.
 
 ## Common overlay operations and the selectors they use
 
 | Operation | Selector / API |
 |---|---|
 | Iterate all pages | `container.querySelectorAll('.pf')` |
-| Scroll to a specific page | `document.getElementById('pf' + n.toString(16)).scrollIntoView({block:'start'})` |
+| Scroll to a specific page | `documentModel.scrollToPage(documentModel.page(n), lead)` (flush, ignores scroll-padding) or `scrollIntoView({block:'start'})` (honors scroll-padding) |
 | Force-show a page | unnecessary — `content-visibility: auto` auto-renders pages near the viewport. |
 | Observe page visibility | IntersectionObserver with `root: #page-container`, observing each `.pf` (still useful for outline tracker, page counter, etc.; visibility is no longer JS-controlled) |
-| Find current reading page | `document.elementFromPoint(viewport_center)`, walk up to `.pf` — **zoom-robust**, preferred. |
+| Find current reading page | Follow `pdf2html-page-change` (the page counter is the one tracker); on demand, `documentModel.mostVisiblePage()`. `document.elementFromPoint(viewport_center)` walked up to `.pf` also works. |
 | Iterate outline entries | `outline.querySelectorAll('a[href^="#pf"]')` — captures `a.l` entries cleanly |
 | Get selection's current focus | `window.getSelection().focusNode` → walk to `.t` parent if you need the line element |
 
@@ -240,12 +268,46 @@ The only time they matter is if you're building a selector like
 - **Don't manipulate inline `.pc.style.display`.** pdf2htmlEX's (killed)
   runtime still sets it occasionally. Stick to adding/removing classes
   on `.pf` and letting CSS `!important` win.
-- **Don't use `offsetTop`/`offsetHeight` for "which page is visible?"
-  checks.** They go stale on browser zoom. Use IntersectionObserver
-  (for continuous tracking) or `elementFromPoint` (for one-off lookups).
-  The outline active tracker is an intentional exception; see ADR 0002.
+- **Don't read `offsetTop`/`offsetHeight` on a `.pf` for positions.**
+  They are page-local units under the per-page zoom and go stale on any
+  zoom change. Use the document model's rect-based geometry (see "Zoom and
+  scroll geometry") or IntersectionObserver.
+- **Don't put CSS `zoom` on `#page-container`.** A zoomed scroller makes
+  Vimium's steps zoom × too long (ADR 0012).
 - **Don't assume hex page IDs are padded.** `pf1` is page 1; `pf01`
   does not exist. Always convert via `.toString(16)` / `parseInt(_,16)`.
 - **Don't remove pdf2htmlEX's `<style>` block from the head.** All the
   `w0`/`x5`/`ff4` classes reference rules in there. Our overlay CSS
   is additive.
+
+## Light raster lifecycle and selected fallback paint
+
+The document model caches static page nodes, never their offsets. A page-frame
+IntersectionObserver with a 3,500 px vertical preload margin mounts and removes
+light raster sources on entry/exit; unchanged scrolling does not scan every
+page or rewrite source/state attributes. Page readiness includes all rasters,
+and a completion event cannot revive an unloaded page.
+
+Paint-safe lines explicitly marked as hidden fallback text remain transparent
+when selected. Their translucent selection background tints the original
+raster rather than painting substitute glyphs. Visible/ambiguous canonical
+lines and the overlay search-entered highlight path retain their existing
+paint. This does not change logical text, reading order or native range metrics.
+
+## Declared page geometry before converter startup
+
+Prepared light HTML carries `data-pdf2html-declared-page-geometry="v1"` and
+`data-pdf2html-page-size="width,height,contentHeight"` on every frame. These
+are original unzoomed CSS dimensions, not cached scroll offsets. The adapter
+validates every record and transform before changing runtime behavior, obtains
+the converter's private Page prototype from one visible page, and initializes
+the remaining page objects from the declared data before DOMContentLoaded.
+This avoids the converter's offscreen `.pc.clientHeight` reads and initial
+whole-document render pass. Navigation still measures fresh frame rects.
+Missing or malformed records keep the original initialization path.
+
+`prepare-light-runtime.py` externalizes supported embedded font binaries into
+content-addressed `page-fonts/` assets without changing font descriptors or text
+markup. Canonical HTML stays unchanged. Unsupported font containers retain
+original URLs. Idle and selected-page pixels must remain identical for this
+preparation step; use the actual browser comparison and startup contract test.
