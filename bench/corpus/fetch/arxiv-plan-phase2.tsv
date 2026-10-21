@@ -1,0 +1,350 @@
+arxiv-1991-hep-th	cat:hep-th	19910901	19910930	9
+arxiv-1991-hep-ph	cat:hep-ph	19911101	19911130	9
+arxiv-1991-hep-lat	cat:hep-lat OR cat:gr-qc	19910901	19910930	8
+arxiv-1991-cond-mat	cat:cond-mat* OR cat:astro-ph*	19911001	19911031	8
+arxiv-1991-alg-geom	cat:alg-geom OR cat:funct-an OR cat:math*	19911201	19911231	8
+arxiv-1992-hep-th	cat:hep-th	19921001	19921031	9
+arxiv-1992-hep-ph	cat:hep-ph	19920901	19920930	9
+arxiv-1992-hep-lat	cat:hep-lat OR cat:gr-qc	19921201	19921231	8
+arxiv-1992-cond-mat	cat:cond-mat* OR cat:astro-ph*	19920801	19920831	8
+arxiv-1992-alg-geom	cat:alg-geom OR cat:funct-an OR cat:math*	19921001	19921031	8
+arxiv-1993-hep-th	cat:hep-th	19930801	19930831	5
+arxiv-1993-hep-ph	cat:hep-ph	19930401	19930430	5
+arxiv-1993-cond-mat	cat:cond-mat*	19930101	19930131	4
+arxiv-1993-astro-ph	cat:astro-ph*	19931001	19931031	4
+arxiv-1993-gr-qc	cat:gr-qc	19930201	19930228	4
+arxiv-1993-nucl-th	cat:nucl-th OR cat:hep-lat OR cat:hep-ex	19930201	19930228	4
+arxiv-1993-alg-geom	cat:alg-geom OR cat:funct-an OR cat:dg-ga OR cat:q-alg OR cat:math*	19930501	19930531	4
+arxiv-1993-chao-dyn	cat:chao-dyn OR cat:patt-sol OR cat:solv-int OR cat:adap-org	19930201	19930228	4
+arxiv-1993-quant-ph	cat:quant-ph	19930801	19930831	4
+arxiv-1993-cmp-lg	cat:cmp-lg OR cat:cs*	19930101	19930131	4
+arxiv-1994-hep-th	cat:hep-th	19941101	19941130	5
+arxiv-1994-hep-ph	cat:hep-ph	19940801	19940831	5
+arxiv-1994-cond-mat	cat:cond-mat*	19941101	19941130	4
+arxiv-1994-astro-ph	cat:astro-ph*	19940601	19940630	4
+arxiv-1994-gr-qc	cat:gr-qc	19940401	19940430	4
+arxiv-1994-nucl-th	cat:nucl-th OR cat:hep-lat OR cat:hep-ex	19940701	19940731	4
+arxiv-1994-alg-geom	cat:alg-geom OR cat:funct-an OR cat:dg-ga OR cat:q-alg OR cat:math*	19940501	19940531	4
+arxiv-1994-chao-dyn	cat:chao-dyn OR cat:patt-sol OR cat:solv-int OR cat:adap-org	19940601	19940630	4
+arxiv-1994-quant-ph	cat:quant-ph	19940601	19940630	4
+arxiv-1994-cmp-lg	cat:cmp-lg OR cat:cs*	19940701	19940731	4
+arxiv-1995-hep-th	cat:hep-th	19951201	19951231	5
+arxiv-1995-hep-ph	cat:hep-ph	19950901	19950930	5
+arxiv-1995-cond-mat	cat:cond-mat*	19951101	19951130	4
+arxiv-1995-astro-ph	cat:astro-ph*	19950201	19950228	4
+arxiv-1995-gr-qc	cat:gr-qc	19951201	19951231	4
+arxiv-1995-nucl-th	cat:nucl-th OR cat:hep-lat OR cat:hep-ex	19950601	19950630	4
+arxiv-1995-alg-geom	cat:alg-geom OR cat:funct-an OR cat:dg-ga OR cat:q-alg OR cat:math*	19950201	19950228	4
+arxiv-1995-chao-dyn	cat:chao-dyn OR cat:patt-sol OR cat:solv-int OR cat:adap-org	19950901	19950930	4
+arxiv-1995-quant-ph	cat:quant-ph	19950901	19950930	4
+arxiv-1995-cmp-lg	cat:cmp-lg OR cat:cs*	19950501	19950531	4
+arxiv-1996-hep-th	cat:hep-th	19960501	19960531	5
+arxiv-1996-hep-ph	cat:hep-ph	19960801	19960831	5
+arxiv-1996-cond-mat	cat:cond-mat*	19960301	19960331	4
+arxiv-1996-astro-ph	cat:astro-ph*	19961101	19961130	4
+arxiv-1996-gr-qc	cat:gr-qc	19961201	19961231	4
+arxiv-1996-nucl-th	cat:nucl-th OR cat:hep-lat OR cat:hep-ex	19961201	19961231	4
+arxiv-1996-alg-geom	cat:alg-geom OR cat:funct-an OR cat:dg-ga OR cat:q-alg OR cat:math*	19961001	19961031	4
+arxiv-1996-chao-dyn	cat:chao-dyn OR cat:patt-sol OR cat:solv-int OR cat:adap-org	19960501	19960531	4
+arxiv-1996-quant-ph	cat:quant-ph	19960101	19960131	4
+arxiv-1996-cmp-lg	cat:cmp-lg OR cat:cs*	19961201	19961231	4
+arxiv-1997-hep-th	cat:hep-th	19970601	19970630	5
+arxiv-1997-hep-ph	cat:hep-ph	19970601	19970630	5
+arxiv-1997-cond-mat	cat:cond-mat*	19970801	19970831	4
+arxiv-1997-astro-ph	cat:astro-ph*	19970701	19970731	4
+arxiv-1997-gr-qc	cat:gr-qc	19970201	19970228	4
+arxiv-1997-nucl-th	cat:nucl-th OR cat:hep-lat OR cat:hep-ex	19970701	19970731	4
+arxiv-1997-alg-geom	cat:alg-geom OR cat:funct-an OR cat:dg-ga OR cat:q-alg OR cat:math*	19971001	19971031	4
+arxiv-1997-chao-dyn	cat:chao-dyn OR cat:patt-sol OR cat:solv-int OR cat:adap-org	19970901	19970930	4
+arxiv-1997-quant-ph	cat:quant-ph	19970801	19970831	4
+arxiv-1997-cmp-lg	cat:cmp-lg OR cat:cs*	19970201	19970228	4
+arxiv-1998-hep-th	cat:hep-th	19980701	19980731	5
+arxiv-1998-hep-ph	cat:hep-ph	19980901	19980930	5
+arxiv-1998-cond-mat	cat:cond-mat*	19981001	19981031	4
+arxiv-1998-astro-ph	cat:astro-ph*	19980801	19980831	4
+arxiv-1998-gr-qc	cat:gr-qc	19980701	19980731	4
+arxiv-1998-nucl-th	cat:nucl-th OR cat:hep-lat OR cat:hep-ex	19980901	19980930	4
+arxiv-1998-alg-geom	cat:alg-geom OR cat:funct-an OR cat:dg-ga OR cat:q-alg OR cat:math*	19980501	19980531	4
+arxiv-1998-chao-dyn	cat:chao-dyn OR cat:patt-sol OR cat:solv-int OR cat:adap-org	19980701	19980731	4
+arxiv-1998-quant-ph	cat:quant-ph	19981001	19981031	4
+arxiv-1998-cmp-lg	cat:cmp-lg OR cat:cs*	19980801	19980831	4
+arxiv-1999-hep-th	cat:hep-th OR cat:hep-ph	19990901	19990930	5
+arxiv-1999-cond-mat	cat:cond-mat*	19990901	19990930	5
+arxiv-1999-astro-ph	cat:astro-ph*	19990101	19990131	4
+arxiv-1999-math	cat:math.*	19991001	19991031	4
+arxiv-1999-cs	cat:cs.*	19990401	19990430	4
+arxiv-1999-stat	cat:stat.*	19990301	19990331	4
+arxiv-1999-econ	cat:econ.* OR cat:q-fin.*	19990101	19990131	4
+arxiv-1999-physics	cat:physics.* OR cat:quant-ph	19991201	19991231	4
+arxiv-1999-q-bio	cat:q-bio.* OR cat:eess.*	19990901	19990930	4
+arxiv-1999-gr-qc	cat:gr-qc OR cat:nucl-th OR cat:math-ph	19991101	19991130	4
+arxiv-2000-hep-th	cat:hep-th OR cat:hep-ph	20000201	20000229	5
+arxiv-2000-cond-mat	cat:cond-mat*	20001201	20001231	5
+arxiv-2000-astro-ph	cat:astro-ph*	20001001	20001031	4
+arxiv-2000-math	cat:math.*	20000701	20000731	4
+arxiv-2000-cs	cat:cs.*	20000801	20000831	4
+arxiv-2000-stat	cat:stat.*	20000301	20000331	4
+arxiv-2000-econ	cat:econ.* OR cat:q-fin.*	20000801	20000831	4
+arxiv-2000-physics	cat:physics.* OR cat:quant-ph	20000401	20000430	4
+arxiv-2000-q-bio	cat:q-bio.* OR cat:eess.*	20000201	20000229	4
+arxiv-2000-gr-qc	cat:gr-qc OR cat:nucl-th OR cat:math-ph	20001101	20001130	4
+arxiv-2001-hep-th	cat:hep-th OR cat:hep-ph	20011201	20011231	5
+arxiv-2001-cond-mat	cat:cond-mat*	20010801	20010831	5
+arxiv-2001-astro-ph	cat:astro-ph*	20011101	20011130	4
+arxiv-2001-math	cat:math.*	20010801	20010831	4
+arxiv-2001-cs	cat:cs.*	20011201	20011231	4
+arxiv-2001-stat	cat:stat.*	20010901	20010930	4
+arxiv-2001-econ	cat:econ.* OR cat:q-fin.*	20010501	20010531	4
+arxiv-2001-physics	cat:physics.* OR cat:quant-ph	20010901	20010930	4
+arxiv-2001-q-bio	cat:q-bio.* OR cat:eess.*	20010701	20010731	4
+arxiv-2001-gr-qc	cat:gr-qc OR cat:nucl-th OR cat:math-ph	20011101	20011130	4
+arxiv-2002-hep-th	cat:hep-th OR cat:hep-ph	20020501	20020531	5
+arxiv-2002-cond-mat	cat:cond-mat*	20020901	20020930	5
+arxiv-2002-astro-ph	cat:astro-ph*	20021101	20021130	4
+arxiv-2002-math	cat:math.*	20020901	20020930	4
+arxiv-2002-cs	cat:cs.*	20021201	20021231	4
+arxiv-2002-stat	cat:stat.*	20020801	20020831	4
+arxiv-2002-econ	cat:econ.* OR cat:q-fin.*	20020701	20020731	4
+arxiv-2002-physics	cat:physics.* OR cat:quant-ph	20020701	20020731	4
+arxiv-2002-q-bio	cat:q-bio.* OR cat:eess.*	20020401	20020430	4
+arxiv-2002-gr-qc	cat:gr-qc OR cat:nucl-th OR cat:math-ph	20020501	20020531	4
+arxiv-2003-hep-th	cat:hep-th OR cat:hep-ph	20030501	20030531	5
+arxiv-2003-cond-mat	cat:cond-mat*	20030101	20030131	5
+arxiv-2003-astro-ph	cat:astro-ph*	20030101	20030131	4
+arxiv-2003-math	cat:math.*	20030301	20030331	4
+arxiv-2003-cs	cat:cs.*	20031101	20031130	4
+arxiv-2003-stat	cat:stat.*	20031001	20031031	4
+arxiv-2003-econ	cat:econ.* OR cat:q-fin.*	20030801	20030831	4
+arxiv-2003-physics	cat:physics.* OR cat:quant-ph	20030901	20030930	4
+arxiv-2003-q-bio	cat:q-bio.* OR cat:eess.*	20030801	20030831	4
+arxiv-2003-gr-qc	cat:gr-qc OR cat:nucl-th OR cat:math-ph	20030601	20030630	4
+arxiv-2004-hep-th	cat:hep-th OR cat:hep-ph	20040401	20040430	5
+arxiv-2004-cond-mat	cat:cond-mat*	20040501	20040531	5
+arxiv-2004-astro-ph	cat:astro-ph*	20041201	20041231	4
+arxiv-2004-math	cat:math.*	20040801	20040831	4
+arxiv-2004-cs	cat:cs.*	20040801	20040831	4
+arxiv-2004-stat	cat:stat.*	20040901	20040930	4
+arxiv-2004-econ	cat:econ.* OR cat:q-fin.*	20040801	20040831	4
+arxiv-2004-physics	cat:physics.* OR cat:quant-ph	20040701	20040731	4
+arxiv-2004-q-bio	cat:q-bio.* OR cat:eess.*	20040901	20040930	4
+arxiv-2004-gr-qc	cat:gr-qc OR cat:nucl-th OR cat:math-ph	20041101	20041130	4
+arxiv-2005-hep-th	cat:hep-th OR cat:hep-ph	20050101	20050131	5
+arxiv-2005-cond-mat	cat:cond-mat*	20050501	20050531	5
+arxiv-2005-astro-ph	cat:astro-ph*	20050601	20050630	4
+arxiv-2005-math	cat:math.*	20050801	20050831	4
+arxiv-2005-cs	cat:cs.*	20050201	20050228	4
+arxiv-2005-stat	cat:stat.*	20050801	20050831	4
+arxiv-2005-econ	cat:econ.* OR cat:q-fin.*	20051201	20051231	4
+arxiv-2005-physics	cat:physics.* OR cat:quant-ph	20051201	20051231	4
+arxiv-2005-q-bio	cat:q-bio.* OR cat:eess.*	20050901	20050930	4
+arxiv-2005-gr-qc	cat:gr-qc OR cat:nucl-th OR cat:math-ph	20050501	20050531	4
+arxiv-2006-hep-th	cat:hep-th OR cat:hep-ph	20060801	20060831	5
+arxiv-2006-cond-mat	cat:cond-mat*	20060301	20060331	5
+arxiv-2006-astro-ph	cat:astro-ph*	20060701	20060731	4
+arxiv-2006-math	cat:math.*	20061201	20061231	4
+arxiv-2006-cs	cat:cs.*	20060801	20060831	4
+arxiv-2006-stat	cat:stat.*	20060201	20060228	4
+arxiv-2006-econ	cat:econ.* OR cat:q-fin.*	20061101	20061130	4
+arxiv-2006-physics	cat:physics.* OR cat:quant-ph	20060501	20060531	4
+arxiv-2006-q-bio	cat:q-bio.* OR cat:eess.*	20060801	20060831	4
+arxiv-2006-gr-qc	cat:gr-qc OR cat:nucl-th OR cat:math-ph	20060601	20060630	4
+arxiv-2007-hep-th	cat:hep-th OR cat:hep-ph	20070201	20070228	5
+arxiv-2007-cond-mat	cat:cond-mat*	20070401	20070430	5
+arxiv-2007-astro-ph	cat:astro-ph*	20071201	20071231	4
+arxiv-2007-math	cat:math.*	20070701	20070731	4
+arxiv-2007-cs	cat:cs.*	20070301	20070331	4
+arxiv-2007-stat	cat:stat.*	20070801	20070831	4
+arxiv-2007-econ	cat:econ.* OR cat:q-fin.*	20070101	20070131	4
+arxiv-2007-physics	cat:physics.* OR cat:quant-ph	20070201	20070228	4
+arxiv-2007-q-bio	cat:q-bio.* OR cat:eess.*	20070101	20070131	4
+arxiv-2007-gr-qc	cat:gr-qc OR cat:nucl-th OR cat:math-ph	20070801	20070831	4
+arxiv-2008-hep-th	cat:hep-th OR cat:hep-ph	20081001	20081031	5
+arxiv-2008-cond-mat	cat:cond-mat*	20080901	20080930	5
+arxiv-2008-astro-ph	cat:astro-ph*	20080201	20080229	4
+arxiv-2008-math	cat:math.*	20081001	20081031	4
+arxiv-2008-cs	cat:cs.*	20080401	20080430	4
+arxiv-2008-stat	cat:stat.*	20080401	20080430	4
+arxiv-2008-econ	cat:econ.* OR cat:q-fin.*	20080201	20080229	4
+arxiv-2008-physics	cat:physics.* OR cat:quant-ph	20081001	20081031	4
+arxiv-2008-q-bio	cat:q-bio.* OR cat:eess.*	20080101	20080131	4
+arxiv-2008-gr-qc	cat:gr-qc OR cat:nucl-th OR cat:math-ph	20080901	20080930	4
+arxiv-2009-hep-th	cat:hep-th OR cat:hep-ph	20090501	20090531	5
+arxiv-2009-cond-mat	cat:cond-mat*	20091101	20091130	5
+arxiv-2009-astro-ph	cat:astro-ph*	20091101	20091130	4
+arxiv-2009-math	cat:math.*	20090601	20090630	4
+arxiv-2009-cs	cat:cs.*	20090301	20090331	4
+arxiv-2009-stat	cat:stat.*	20090101	20090131	4
+arxiv-2009-econ	cat:econ.* OR cat:q-fin.*	20090601	20090630	4
+arxiv-2009-physics	cat:physics.* OR cat:quant-ph	20091101	20091130	4
+arxiv-2009-q-bio	cat:q-bio.* OR cat:eess.*	20091001	20091031	4
+arxiv-2009-gr-qc	cat:gr-qc OR cat:nucl-th OR cat:math-ph	20091001	20091031	4
+arxiv-2010-hep-th	cat:hep-th OR cat:hep-ph	20100801	20100831	5
+arxiv-2010-cond-mat	cat:cond-mat*	20101201	20101231	5
+arxiv-2010-astro-ph	cat:astro-ph*	20101201	20101231	4
+arxiv-2010-math	cat:math.*	20100301	20100331	4
+arxiv-2010-cs	cat:cs.*	20100901	20100930	4
+arxiv-2010-stat	cat:stat.*	20100401	20100430	4
+arxiv-2010-econ	cat:econ.* OR cat:q-fin.*	20100801	20100831	4
+arxiv-2010-physics	cat:physics.* OR cat:quant-ph	20101001	20101031	4
+arxiv-2010-q-bio	cat:q-bio.* OR cat:eess.*	20100301	20100331	4
+arxiv-2010-gr-qc	cat:gr-qc OR cat:nucl-th OR cat:math-ph	20101001	20101031	4
+arxiv-2011-hep-th	cat:hep-th OR cat:hep-ph	20111201	20111231	5
+arxiv-2011-cond-mat	cat:cond-mat*	20110901	20110930	5
+arxiv-2011-astro-ph	cat:astro-ph*	20110501	20110531	4
+arxiv-2011-math	cat:math.*	20110201	20110228	4
+arxiv-2011-cs	cat:cs.*	20110701	20110731	4
+arxiv-2011-stat	cat:stat.*	20111101	20111130	4
+arxiv-2011-econ	cat:econ.* OR cat:q-fin.*	20110301	20110331	4
+arxiv-2011-physics	cat:physics.* OR cat:quant-ph	20110301	20110331	4
+arxiv-2011-q-bio	cat:q-bio.* OR cat:eess.*	20111001	20111031	4
+arxiv-2011-gr-qc	cat:gr-qc OR cat:nucl-th OR cat:math-ph	20110501	20110531	4
+arxiv-2012-hep-th	cat:hep-th OR cat:hep-ph	20120901	20120930	5
+arxiv-2012-cond-mat	cat:cond-mat*	20120701	20120731	5
+arxiv-2012-astro-ph	cat:astro-ph*	20120701	20120731	4
+arxiv-2012-math	cat:math.*	20120301	20120331	4
+arxiv-2012-cs	cat:cs.*	20120901	20120930	4
+arxiv-2012-stat	cat:stat.*	20120401	20120430	4
+arxiv-2012-econ	cat:econ.* OR cat:q-fin.*	20120701	20120731	4
+arxiv-2012-physics	cat:physics.* OR cat:quant-ph	20120101	20120131	4
+arxiv-2012-q-bio	cat:q-bio.* OR cat:eess.*	20120201	20120229	4
+arxiv-2012-gr-qc	cat:gr-qc OR cat:nucl-th OR cat:math-ph	20120701	20120731	4
+arxiv-2013-hep-th	cat:hep-th OR cat:hep-ph	20130201	20130228	5
+arxiv-2013-cond-mat	cat:cond-mat*	20130101	20130131	5
+arxiv-2013-astro-ph	cat:astro-ph*	20130601	20130630	4
+arxiv-2013-math	cat:math.*	20131101	20131130	4
+arxiv-2013-cs	cat:cs.*	20130601	20130630	4
+arxiv-2013-stat	cat:stat.*	20130101	20130131	4
+arxiv-2013-econ	cat:econ.* OR cat:q-fin.*	20130101	20130131	4
+arxiv-2013-physics	cat:physics.* OR cat:quant-ph	20130901	20130930	4
+arxiv-2013-q-bio	cat:q-bio.* OR cat:eess.*	20130801	20130831	4
+arxiv-2013-gr-qc	cat:gr-qc OR cat:nucl-th OR cat:math-ph	20130601	20130630	4
+arxiv-2014-hep-th	cat:hep-th OR cat:hep-ph	20141101	20141130	5
+arxiv-2014-cond-mat	cat:cond-mat*	20140501	20140531	5
+arxiv-2014-astro-ph	cat:astro-ph*	20140801	20140831	4
+arxiv-2014-math	cat:math.*	20140601	20140630	4
+arxiv-2014-cs	cat:cs.*	20140201	20140228	4
+arxiv-2014-stat	cat:stat.*	20140801	20140831	4
+arxiv-2014-econ	cat:econ.* OR cat:q-fin.*	20140801	20140831	4
+arxiv-2014-physics	cat:physics.* OR cat:quant-ph	20141001	20141031	4
+arxiv-2014-q-bio	cat:q-bio.* OR cat:eess.*	20141001	20141031	4
+arxiv-2014-gr-qc	cat:gr-qc OR cat:nucl-th OR cat:math-ph	20140301	20140331	4
+arxiv-2015-hep-th	cat:hep-th OR cat:hep-ph	20150301	20150331	5
+arxiv-2015-cond-mat	cat:cond-mat*	20151001	20151031	5
+arxiv-2015-astro-ph	cat:astro-ph*	20150901	20150930	4
+arxiv-2015-math	cat:math.*	20150401	20150430	4
+arxiv-2015-cs	cat:cs.*	20150701	20150731	4
+arxiv-2015-stat	cat:stat.*	20151001	20151031	4
+arxiv-2015-econ	cat:econ.* OR cat:q-fin.*	20150601	20150630	4
+arxiv-2015-physics	cat:physics.* OR cat:quant-ph	20150801	20150831	4
+arxiv-2015-q-bio	cat:q-bio.* OR cat:eess.*	20151001	20151031	4
+arxiv-2015-gr-qc	cat:gr-qc OR cat:nucl-th OR cat:math-ph	20150401	20150430	4
+arxiv-2016-hep-th	cat:hep-th OR cat:hep-ph	20161101	20161130	5
+arxiv-2016-cond-mat	cat:cond-mat*	20161201	20161231	5
+arxiv-2016-astro-ph	cat:astro-ph*	20160201	20160229	4
+arxiv-2016-math	cat:math.*	20160901	20160930	4
+arxiv-2016-cs	cat:cs.*	20160701	20160731	4
+arxiv-2016-stat	cat:stat.*	20160101	20160131	4
+arxiv-2016-econ	cat:econ.* OR cat:q-fin.*	20160401	20160430	4
+arxiv-2016-physics	cat:physics.* OR cat:quant-ph	20161101	20161130	4
+arxiv-2016-q-bio	cat:q-bio.* OR cat:eess.*	20160301	20160331	4
+arxiv-2016-gr-qc	cat:gr-qc OR cat:nucl-th OR cat:math-ph	20160101	20160131	4
+arxiv-2017-hep-th	cat:hep-th OR cat:hep-ph	20171101	20171130	5
+arxiv-2017-cond-mat	cat:cond-mat*	20170901	20170930	5
+arxiv-2017-astro-ph	cat:astro-ph*	20170101	20170131	4
+arxiv-2017-math	cat:math.*	20170801	20170831	4
+arxiv-2017-cs	cat:cs.*	20171101	20171130	4
+arxiv-2017-stat	cat:stat.*	20170401	20170430	4
+arxiv-2017-econ	cat:econ.* OR cat:q-fin.*	20170801	20170831	4
+arxiv-2017-physics	cat:physics.* OR cat:quant-ph	20171201	20171231	4
+arxiv-2017-q-bio	cat:q-bio.* OR cat:eess.*	20171101	20171130	4
+arxiv-2017-gr-qc	cat:gr-qc OR cat:nucl-th OR cat:math-ph	20170101	20170131	4
+arxiv-2018-hep-th	cat:hep-th OR cat:hep-ph	20180301	20180331	5
+arxiv-2018-cond-mat	cat:cond-mat*	20181101	20181130	5
+arxiv-2018-astro-ph	cat:astro-ph*	20180901	20180930	4
+arxiv-2018-math	cat:math.*	20180401	20180430	4
+arxiv-2018-cs	cat:cs.*	20180901	20180930	4
+arxiv-2018-stat	cat:stat.*	20180301	20180331	4
+arxiv-2018-econ	cat:econ.* OR cat:q-fin.*	20180301	20180331	4
+arxiv-2018-physics	cat:physics.* OR cat:quant-ph	20181101	20181130	4
+arxiv-2018-q-bio	cat:q-bio.* OR cat:eess.*	20180301	20180331	4
+arxiv-2018-gr-qc	cat:gr-qc OR cat:nucl-th OR cat:math-ph	20180701	20180731	4
+arxiv-2019-hep-th	cat:hep-th OR cat:hep-ph	20190501	20190531	5
+arxiv-2019-cond-mat	cat:cond-mat*	20190701	20190731	5
+arxiv-2019-astro-ph	cat:astro-ph*	20190901	20190930	4
+arxiv-2019-math	cat:math.*	20190701	20190731	4
+arxiv-2019-cs	cat:cs.*	20190201	20190228	4
+arxiv-2019-stat	cat:stat.*	20190701	20190731	4
+arxiv-2019-econ	cat:econ.* OR cat:q-fin.*	20190501	20190531	4
+arxiv-2019-physics	cat:physics.* OR cat:quant-ph	20190301	20190331	4
+arxiv-2019-q-bio	cat:q-bio.* OR cat:eess.*	20190601	20190630	4
+arxiv-2019-gr-qc	cat:gr-qc OR cat:nucl-th OR cat:math-ph	20190301	20190331	4
+arxiv-2020-hep-th	cat:hep-th OR cat:hep-ph	20200501	20200531	5
+arxiv-2020-cond-mat	cat:cond-mat*	20200801	20200831	5
+arxiv-2020-astro-ph	cat:astro-ph*	20200801	20200831	4
+arxiv-2020-math	cat:math.*	20200701	20200731	4
+arxiv-2020-cs	cat:cs.*	20200501	20200531	4
+arxiv-2020-stat	cat:stat.*	20200801	20200831	4
+arxiv-2020-econ	cat:econ.* OR cat:q-fin.*	20200301	20200331	4
+arxiv-2020-physics	cat:physics.* OR cat:quant-ph	20200601	20200630	4
+arxiv-2020-q-bio	cat:q-bio.* OR cat:eess.*	20200901	20200930	4
+arxiv-2020-gr-qc	cat:gr-qc OR cat:nucl-th OR cat:math-ph	20200801	20200831	4
+arxiv-2021-hep-th	cat:hep-th OR cat:hep-ph	20210801	20210831	5
+arxiv-2021-cond-mat	cat:cond-mat*	20210201	20210228	5
+arxiv-2021-astro-ph	cat:astro-ph*	20210901	20210930	4
+arxiv-2021-math	cat:math.*	20210901	20210930	4
+arxiv-2021-cs	cat:cs.*	20210501	20210531	4
+arxiv-2021-stat	cat:stat.*	20210201	20210228	4
+arxiv-2021-econ	cat:econ.* OR cat:q-fin.*	20210401	20210430	4
+arxiv-2021-physics	cat:physics.* OR cat:quant-ph	20210401	20210430	4
+arxiv-2021-q-bio	cat:q-bio.* OR cat:eess.*	20210101	20210131	4
+arxiv-2021-gr-qc	cat:gr-qc OR cat:nucl-th OR cat:math-ph	20210201	20210228	4
+arxiv-2022-hep-th	cat:hep-th OR cat:hep-ph	20220801	20220831	5
+arxiv-2022-cond-mat	cat:cond-mat*	20221101	20221130	5
+arxiv-2022-astro-ph	cat:astro-ph*	20220601	20220630	4
+arxiv-2022-math	cat:math.*	20220701	20220731	4
+arxiv-2022-cs	cat:cs.*	20220901	20220930	4
+arxiv-2022-stat	cat:stat.*	20221101	20221130	4
+arxiv-2022-econ	cat:econ.* OR cat:q-fin.*	20220301	20220331	4
+arxiv-2022-physics	cat:physics.* OR cat:quant-ph	20220101	20220131	4
+arxiv-2022-q-bio	cat:q-bio.* OR cat:eess.*	20220601	20220630	4
+arxiv-2022-gr-qc	cat:gr-qc OR cat:nucl-th OR cat:math-ph	20220301	20220331	4
+arxiv-2023-hep-th	cat:hep-th OR cat:hep-ph	20230601	20230630	5
+arxiv-2023-cond-mat	cat:cond-mat*	20230901	20230930	5
+arxiv-2023-astro-ph	cat:astro-ph*	20231101	20231130	4
+arxiv-2023-math	cat:math.*	20231001	20231031	4
+arxiv-2023-cs	cat:cs.*	20230901	20230930	4
+arxiv-2023-stat	cat:stat.*	20230401	20230430	4
+arxiv-2023-econ	cat:econ.* OR cat:q-fin.*	20230201	20230228	4
+arxiv-2023-physics	cat:physics.* OR cat:quant-ph	20231001	20231031	4
+arxiv-2023-q-bio	cat:q-bio.* OR cat:eess.*	20231201	20231231	4
+arxiv-2023-gr-qc	cat:gr-qc OR cat:nucl-th OR cat:math-ph	20230501	20230531	4
+arxiv-2024-hep-th	cat:hep-th OR cat:hep-ph	20240901	20240930	5
+arxiv-2024-cond-mat	cat:cond-mat*	20241001	20241031	5
+arxiv-2024-astro-ph	cat:astro-ph*	20241201	20241231	4
+arxiv-2024-math	cat:math.*	20240401	20240430	4
+arxiv-2024-cs	cat:cs.*	20241001	20241031	4
+arxiv-2024-stat	cat:stat.*	20240501	20240531	4
+arxiv-2024-econ	cat:econ.* OR cat:q-fin.*	20241001	20241031	4
+arxiv-2024-physics	cat:physics.* OR cat:quant-ph	20240501	20240531	4
+arxiv-2024-q-bio	cat:q-bio.* OR cat:eess.*	20241101	20241130	4
+arxiv-2024-gr-qc	cat:gr-qc OR cat:nucl-th OR cat:math-ph	20240901	20240930	4
+arxiv-2025-hep-th	cat:hep-th OR cat:hep-ph	20250301	20250331	5
+arxiv-2025-cond-mat	cat:cond-mat*	20250201	20250228	5
+arxiv-2025-astro-ph	cat:astro-ph*	20250501	20250531	4
+arxiv-2025-math	cat:math.*	20250201	20250228	4
+arxiv-2025-cs	cat:cs.*	20250701	20250731	4
+arxiv-2025-stat	cat:stat.*	20250301	20250331	4
+arxiv-2025-econ	cat:econ.* OR cat:q-fin.*	20250201	20250228	4
+arxiv-2025-physics	cat:physics.* OR cat:quant-ph	20251101	20251130	4
+arxiv-2025-q-bio	cat:q-bio.* OR cat:eess.*	20250101	20250131	4
+arxiv-2025-gr-qc	cat:gr-qc OR cat:nucl-th OR cat:math-ph	20250601	20250630	4
+arxiv-2026-hep-th	cat:hep-th OR cat:hep-ph	20260301	20260331	5
+arxiv-2026-cond-mat	cat:cond-mat*	20260201	20260228	5
+arxiv-2026-astro-ph	cat:astro-ph*	20260901	20260930	4
+arxiv-2026-math	cat:math.*	20260601	20260630	4
+arxiv-2026-cs	cat:cs.*	20260501	20260531	4
+arxiv-2026-stat	cat:stat.*	20260201	20260228	4
+arxiv-2026-econ	cat:econ.* OR cat:q-fin.*	20260501	20260531	4
+arxiv-2026-physics	cat:physics.* OR cat:quant-ph	20260601	20260630	4
+arxiv-2026-q-bio	cat:q-bio.* OR cat:eess.*	20260301	20260331	4
+arxiv-2026-gr-qc	cat:gr-qc OR cat:nucl-th OR cat:math-ph	20260501	20260531	4
