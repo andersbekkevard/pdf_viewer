@@ -9,10 +9,11 @@ LRU eviction is deliberately NOT built on top of this (PLAN §3:
 """
 from __future__ import annotations
 
+import contextlib
 import pathlib
 import sqlite3
 import time
-from typing import Literal
+from typing import Iterator, Literal
 
 DB_PATH = pathlib.Path.home() / ".cache" / "pdf_viewer" / "visits.db"
 SESSION_WINDOW_SEC = 15 * 60
@@ -30,11 +31,21 @@ CREATE INDEX IF NOT EXISTS idx_visits_ts   ON visits(ts);
 """
 
 
-def _connect() -> sqlite3.Connection:
+@contextlib.contextmanager
+def _connect() -> Iterator[sqlite3.Connection]:
+    """An autocommit connection that is closed on exit.
+
+    sqlite3.Connection's own context manager only ends the transaction; it
+    leaves the connection (and its file handles) open until garbage
+    collection.
+    """
     conn = sqlite3.connect(DB_PATH, isolation_level=None)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA synchronous=NORMAL")
-    return conn
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        yield conn
+    finally:
+        conn.close()
 
 
 def init() -> None:

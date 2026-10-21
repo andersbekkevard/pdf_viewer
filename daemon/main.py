@@ -4,13 +4,23 @@ Routes:
     GET    /view?path=<local>   light HTML by default, canonical/PDF fallback
     GET    /view?url=<remote>   light HTML by default, canonical/remote fallback
     GET    /view-raw?<remote>   same as /view?url=, but preserves raw query strings
-    GET    /view-canonical?...  canonical HTML rollback route
-    GET    /view-light?...      explicit light HTML, canonical fallback
+    GET    /view-canonical?...  canonical HTML rollback route (also -raw)
+    GET    /view-light?...      explicit light HTML, canonical fallback (also -raw)
+    GET    /native?...          the original PDF for a hash, path or url
+    GET    /library             cached docs by frecency (overlay :open, ⌘K)
+    GET    /cache-urls          redirect rules for the browser extension
+    POST   /signal/navigate     queue a tab navigation for the extension
+    GET    /signal/navigate/wait  extension long-poll for queued signals
+    POST   /extension/toggle    toolbar toggle: disable/enable the current tab's PDF
+    PUT    /entry/<hash>/disabled  disable or re-enable redirects for an entry
     GET    /stats               visit totals + top 20 by count (hash → name enriched)
     GET    /stats/recent        raw visit timeline, most-recent first
     GET    /_assets/*           overlay.{css,js} from the repo assets dir
     GET    /<hash>/<file>       cached pdf2htmlEX bundle (html + any sibling files)
     GET    /healthz             liveness probe
+    POST   /signal/fetch        ask the extension to fetch a source PDF with browser cookies
+    PUT    /fetch/<id>          extension upload of those bytes (memory only)
+    GET    /fetch/<id>          convert-script collection of those bytes
     DELETE /mapping/<hash>      drop the mapping row, rmtree the dir, forget visits
     PUT    /entry/<hash>/name   rename a cache entry's HTML file (changes search name)
 
@@ -27,6 +37,7 @@ Run:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import pathlib
 import time
@@ -34,7 +45,7 @@ import urllib.parse
 from typing import Optional
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Request
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -54,18 +65,20 @@ REPO_DIR = pathlib.Path(__file__).resolve().parents[1]
 ASSETS_DIR = REPO_DIR / "assets"
 catalog = CacheCatalog(CACHE_DIR, visits)
 
-app = FastAPI(title="pdf_viewer", version="0.1.0")
+
+@contextlib.asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    visits.init()
+    yield
+
+
+app = FastAPI(title="pdf_viewer", version="0.1.0", lifespan=_lifespan)
 
 
 def _prefer_light_from_environment() -> bool:
     """Prefer light HTML unless an explicit canonical rollback is requested."""
     value = os.environ.get("PDF_VIEWER_PREFER_LIGHT", "")
     return value.strip().lower() not in {"false", "0", "no", "off"}
-
-
-@app.on_event("startup")
-def _startup() -> None:
-    visits.init()
 
 
 # -----------------------------------------------------------------------------
@@ -223,6 +236,115 @@ async def signal_navigate_wait(
             return []
 
 
+# -----------------------------------------------------------------------------
+# Browser fetch — source bytes through the browser's own session.
+#
+# The convert script downloads with curl, which has none of the browser's
+# cookies. Auth-gated hosts (Cloudflare Access, campus SSO) answer it with an
+# HTML sign-in page. On that failure the script POSTs /signal/fetch; the
+# extension sees a `fetch` signal, fetches the URL with credentials (only if a
+# tab in that browser has exactly that URL open), and PUTs the bytes back. The
+# script collects them from GET /fetch/<id>. Results live in memory only and
+# are dropped once collected or after the TTL, so the daemon still writes
+# nothing to the cache.
+#
+# No CORS headers are sent, and FastAPI rejects non-JSON bodies on the JSON
+# route, so a web page cannot start a fetch or read a result cross-origin.
+# -----------------------------------------------------------------------------
+
+_FETCH_TTL_SEC = 600
+_FETCH_MAX_BYTES = 512 * 1024 * 1024
+_fetches: dict[int, dict] = {}
+
+
+def _purge_expired_fetches() -> None:
+    cutoff = time.time() - _FETCH_TTL_SEC
+    for fetch_id in [k for k, v in _fetches.items() if v["created_at"] < cutoff]:
+        del _fetches[fetch_id]
+
+
+class FetchSignal(BaseModel):
+    url: str
+
+
+@app.post("/signal/fetch")
+async def signal_fetch(sig: FetchSignal):
+    if not sig.url.startswith(("https://", "http://")):
+        raise HTTPException(400, "only http(s) URLs can be fetched")
+    _purge_expired_nav_signals()
+    _purge_expired_fetches()
+    fetch_id = _next_nav_signal_id()
+    _fetches[fetch_id] = {"state": "pending", "created_at": time.time()}
+    _pending_nav_signals.append({
+        "type": "fetch",
+        "id": fetch_id,
+        "url": sig.url,
+        "created_at": time.time(),
+    })
+    _wake_nav_waiters()
+    return {"id": fetch_id}
+
+
+@app.put("/fetch/{fetch_id}")
+async def fetch_put(fetch_id: int, request: Request):
+    """Extension upload: the body is the fetched bytes, or with an
+    `X-Fetch-Error` header, the reason the fetch failed. An empty PUT with
+    `X-Fetch-Started` acknowledges the signal before a long download, so the
+    script can tell a silent extension from a slow source."""
+    _purge_expired_fetches()
+    entry = _fetches.get(fetch_id)
+    if entry is None:
+        raise HTTPException(404, "unknown or expired fetch")
+    if entry["state"] not in ("pending", "started"):
+        # Another browser with the same tab open answered first.
+        return {"accepted": False}
+    if request.headers.get("x-fetch-started"):
+        entry["state"] = "started"
+        return {"accepted": True}
+    error = request.headers.get("x-fetch-error")
+    if error:
+        entry.update(state="error", error=error[:500])
+        return {"accepted": True}
+    body = bytearray()
+    async for chunk in request.stream():
+        body.extend(chunk)
+        if len(body) > _FETCH_MAX_BYTES:
+            entry.update(state="error", error="source larger than 512 MB")
+            raise HTTPException(413, "too large")
+    entry.update(
+        state="done",
+        body=bytes(body),
+        content_type=request.headers.get("x-source-content-type", ""),
+        disposition=request.headers.get("x-source-content-disposition", ""),
+    )
+    return {"accepted": True}
+
+
+@app.get("/fetch/{fetch_id}")
+async def fetch_get(fetch_id: int):
+    """Convert-script collection: 202 with {"state": "pending"|"started"} until
+    the extension answers, then 200 with the source bytes
+    (Content-Disposition passed through for filename resolution), 502 with the
+    extension's error. A collected result is removed."""
+    _purge_expired_fetches()
+    entry = _fetches.get(fetch_id)
+    if entry is None:
+        raise HTTPException(404, "unknown or expired fetch")
+    if entry["state"] in ("pending", "started"):
+        return JSONResponse({"state": entry["state"]}, status_code=202)
+    del _fetches[fetch_id]
+    if entry["state"] == "error":
+        return JSONResponse({"error": entry["error"]}, status_code=502)
+    headers = {}
+    if entry["disposition"]:
+        headers["Content-Disposition"] = entry["disposition"]
+    return Response(
+        entry["body"],
+        media_type=entry["content_type"] or "application/octet-stream",
+        headers=headers,
+    )
+
+
 @app.get("/healthz")
 def healthz():
     entries = 0
@@ -239,56 +361,24 @@ def healthz():
     }
 
 
-@app.get("/view")
-def view(
-    background: BackgroundTasks,
-    path: Optional[str] = Query(None, description="absolute local path"),
-    url: Optional[str] = Query(None, description="http(s) URL"),
-):
+# Three representation choices (environment preference, light, canonical),
+# each reachable as `?path=`/`?url=` or as a raw query string. The routes only
+# pick the representation; _view_query and _raw_url hold the shared rules.
+
+def _view_query(path: Optional[str], url: Optional[str], background: BackgroundTasks, *, light: bool):
     if (path is None) == (url is None):
         raise HTTPException(400, "provide exactly one of: path, url")
     if path is not None:
-        return _view_path(path, background, light=_prefer_light_from_environment())
-    assert url is not None
-    return _view_url(url, background, light=_prefer_light_from_environment())
+        return _view_path(path, background, light=light)
+    return _view_url(url, background, light=light)
 
 
-@app.get("/view-light")
-def view_light(
-    background: BackgroundTasks,
-    path: Optional[str] = Query(None, description="absolute local path"),
-    url: Optional[str] = Query(None, description="http(s) URL"),
-):
-    if (path is None) == (url is None):
-        raise HTTPException(400, "provide exactly one of: path, url")
-    if path is not None:
-        return _view_path(path, background, light=True)
-    assert url is not None
-    return _view_url(url, background, light=True)
+def _raw_url(request: Request) -> str:
+    """The whole raw query string as an absolute http(s) URL.
 
-
-@app.get("/view-canonical")
-def view_canonical(
-    background: BackgroundTasks,
-    path: Optional[str] = Query(None, description="absolute local path"),
-    url: Optional[str] = Query(None, description="http(s) URL"),
-):
-    if (path is None) == (url is None):
-        raise HTTPException(400, "provide exactly one of: path, url")
-    if path is not None:
-        return _view_path(path, background, light=False)
-    assert url is not None
-    return _view_url(url, background, light=False)
-
-
-@app.get("/view-raw")
-def view_raw(request: Request, background: BackgroundTasks):
-    """Remote URL view route for extension redirects.
-
-    declarativeNetRequest regex substitutions cannot percent-encode captures.
-    The extension therefore redirects to `/view-raw?<original-url>` and this
-    route treats the entire raw query string as the URL, preserving signed
-    query strings containing `&`.
+    declarativeNetRequest regex substitutions cannot percent-encode captures,
+    so the extension redirects to `/view-raw?<original-url>`; reading the raw
+    query keeps signed query strings containing `&` intact.
     """
     raw_query = request.scope.get("query_string", b"")
     if not raw_query:
@@ -297,44 +387,53 @@ def view_raw(request: Request, background: BackgroundTasks):
         url = raw_query.decode("ascii")
     except UnicodeDecodeError:
         raise HTTPException(400, "raw URL must be ASCII / percent-encoded")
-
     parsed = urllib.parse.urlparse(url)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise HTTPException(400, "raw URL must be an absolute http(s) URL")
-    return _view_url(url, background, light=_prefer_light_from_environment())
+    return url
+
+
+@app.get("/view")
+def view(
+    background: BackgroundTasks,
+    path: Optional[str] = Query(None, description="absolute local path"),
+    url: Optional[str] = Query(None, description="http(s) URL"),
+):
+    return _view_query(path, url, background, light=_prefer_light_from_environment())
+
+
+@app.get("/view-light")
+def view_light(
+    background: BackgroundTasks,
+    path: Optional[str] = Query(None, description="absolute local path"),
+    url: Optional[str] = Query(None, description="http(s) URL"),
+):
+    return _view_query(path, url, background, light=True)
+
+
+@app.get("/view-canonical")
+def view_canonical(
+    background: BackgroundTasks,
+    path: Optional[str] = Query(None, description="absolute local path"),
+    url: Optional[str] = Query(None, description="http(s) URL"),
+):
+    return _view_query(path, url, background, light=False)
+
+
+@app.get("/view-raw")
+def view_raw(request: Request, background: BackgroundTasks):
+    """Remote URL view route for extension redirects."""
+    return _view_url(_raw_url(request), background, light=_prefer_light_from_environment())
 
 
 @app.get("/view-light-raw")
 def view_light_raw(request: Request, background: BackgroundTasks):
-    """Light-variant remote URL route for extension redirects."""
-    raw_query = request.scope.get("query_string", b"")
-    if not raw_query:
-        raise HTTPException(400, "missing raw URL query string")
-    try:
-        url = raw_query.decode("ascii")
-    except UnicodeDecodeError:
-        raise HTTPException(400, "raw URL must be ASCII / percent-encoded")
-
-    parsed = urllib.parse.urlparse(url)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        raise HTTPException(400, "raw URL must be an absolute http(s) URL")
-    return _view_url(url, background, light=True)
+    return _view_url(_raw_url(request), background, light=True)
 
 
 @app.get("/view-canonical-raw")
 def view_canonical_raw(request: Request, background: BackgroundTasks):
-    """Canonical rollback route preserving raw signed URL queries."""
-    raw_query = request.scope.get("query_string", b"")
-    if not raw_query:
-        raise HTTPException(400, "missing raw URL query string")
-    try:
-        url = raw_query.decode("ascii")
-    except UnicodeDecodeError:
-        raise HTTPException(400, "raw URL must be ASCII / percent-encoded")
-    parsed = urllib.parse.urlparse(url)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        raise HTTPException(400, "raw URL must be an absolute http(s) URL")
-    return _view_url(url, background, light=False)
+    return _view_url(_raw_url(request), background, light=False)
 
 
 def _view_path(path: str, background: BackgroundTasks, *, light: bool):
@@ -617,15 +716,17 @@ def stats_recent(limit: int = Query(100, ge=1, le=1000)):
 # Static mounts. Registered after routes so /view, /healthz take precedence.
 # -----------------------------------------------------------------------------
 
-# Overlay assets — repo-backed so edits to overlay.{css,js} go live on refresh.
-# StaticFiles already emits ETag + Last-Modified and honors If-None-Match /
-# If-Modified-Since (304). We add a short must-revalidate Cache-Control so the
-# browser revalidates promptly instead of using its opaque heuristic freshness
-# window — this is what lets stale ?v= HTML self-correct without a hard reload.
+# Overlay assets — repo-backed so edits to overlay*.{css,js} go live on
+# refresh. StaticFiles already emits ETag + Last-Modified and honors
+# If-None-Match / If-Modified-Since (304). `no-cache` makes the browser
+# revalidate every load: only overlay.js and overlay.css carry the injected
+# ?v= cache-buster, so the modules overlay.js imports must never be served
+# from a stale cache next to a newer entry module. Revalidation is a local
+# 304, so it costs nothing measurable.
 class _RevalidatingStatic(StaticFiles):
     async def get_response(self, path, scope):
         resp = await super().get_response(path, scope)
-        resp.headers.setdefault("Cache-Control", "max-age=60, must-revalidate")
+        resp.headers.setdefault("Cache-Control", "no-cache")
         return resp
 
 

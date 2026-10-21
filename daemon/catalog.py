@@ -91,22 +91,28 @@ def url_hash(url: str) -> str:
     return hashlib.sha256(f"{parsed.netloc}{parsed.path}".encode()).hexdigest()[:16]
 
 
-def strip_passthrough(url: str) -> str:
+# The passthrough marker is added and removed as a literal `&`-separated
+# query item. Every other byte of the query is preserved: re-encoding it
+# would break signed URLs and URLs embedded raw in a daemon query string.
+
+def _query_items(url: str) -> tuple[urllib.parse.ParseResult, list[str]]:
     parsed = urllib.parse.urlparse(url)
-    if not parsed.query:
+    return parsed, parsed.query.split("&") if parsed.query else []
+
+
+def strip_passthrough(url: str) -> str:
+    parsed, items = _query_items(url)
+    kept = [item for item in items if item != PASSTHROUGH_MARKER]
+    if len(kept) == len(items):
         return url
-    pairs = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
-    cleaned = [(k, v) for k, v in pairs if (k, v) != ("_pdfvw", "passthrough")]
-    return urllib.parse.urlunparse(parsed._replace(query=urllib.parse.urlencode(cleaned)))
+    return urllib.parse.urlunparse(parsed._replace(query="&".join(kept)))
 
 
 def with_passthrough(url: str) -> str:
-    parsed = urllib.parse.urlparse(url)
-    pairs = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
-    if ("_pdfvw", "passthrough") in pairs:
+    parsed, items = _query_items(url)
+    if PASSTHROUGH_MARKER in items:
         return url
-    query = f"{parsed.query}&{PASSTHROUGH_MARKER}" if parsed.query else PASSTHROUGH_MARKER
-    return urllib.parse.urlunparse(parsed._replace(query=query))
+    return urllib.parse.urlunparse(parsed._replace(query="&".join(items + [PASSTHROUGH_MARKER])))
 
 
 class CacheCatalog:
@@ -374,8 +380,11 @@ class CacheCatalog:
     @staticmethod
     def _rename_result(hash_: str, old_name: str, new_name: str, renamed: bool,
                        representation: Representation, boosted: int) -> dict:
+        # `href` follows the library's rule: the light representation when one
+        # exists, so a renamed light tab keeps viewing light HTML.
+        preferred = representation.light or representation.canonical
         result = {"hash": hash_, "old_name": old_name, "new_name": new_name, "renamed": renamed,
-                  "href": f"/{hash_}/{representation.canonical.name}",
+                  "href": f"/{hash_}/{preferred.name}",
                   "canonical_href": f"/{hash_}/{representation.canonical.name}",
                   "light_href": f"/{hash_}/{representation.light.name}" if representation.light else None}
         if renamed:
@@ -433,7 +442,9 @@ class CacheCatalog:
 
     def hash_for_browser_url(self, url: str, *, daemon_port: int = 7435) -> Optional[str]:
         clean = strip_passthrough(url)
-        parsed = urllib.parse.urlparse(clean)
+        # A daemon URL's query may embed a whole source URL, so read it before
+        # any passthrough stripping of the outer URL.
+        parsed = urllib.parse.urlparse(url)
         daemon = parsed.scheme in {"http", "https"} and parsed.hostname in {"localhost", "127.0.0.1", "::1"}
         try:
             daemon = daemon and parsed.port == daemon_port
@@ -446,12 +457,12 @@ class CacheCatalog:
             query = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
             if parsed.path == "/native" and query.get("hash") and HASH_RE.fullmatch(query["hash"][0]):
                 return query["hash"][0]
-            if parsed.path in {"/view", "/view-light", "/native"}:
+            if parsed.path in {"/view", "/view-light", "/view-canonical", "/native"}:
                 if query.get("path"):
                     return self._hash_for_local_path(pathlib.Path(query["path"][0]))
                 if query.get("url"):
                     return url_hash(strip_passthrough(query["url"][0]))
-            if parsed.path in {"/view-raw", "/view-light-raw"} and parsed.query:
+            if parsed.path in {"/view-raw", "/view-light-raw", "/view-canonical-raw"} and parsed.query:
                 return url_hash(strip_passthrough(parsed.query))
         if parsed.scheme == "file":
             return self._hash_for_local_path(pathlib.Path(urllib.parse.unquote(parsed.path)))

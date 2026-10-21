@@ -43,6 +43,11 @@ function escapeRegex(s) {
 // try to add id 1000, second one fails with "Rule with id 1000 does not have
 // a unique ID." The mutex collapses concurrent calls into one.
 let _syncInFlight = null;
+// Fingerprint of the rule set this service worker last installed. The 30 s
+// alarm then only touches declarativeNetRequest when the cache changed, so a
+// steady state never passes through the brief remove-then-add gap below.
+// Empty after a service-worker restart, which costs one full sync.
+let _appliedRulesKey = null;
 
 function syncCachedRules() {
     if (_syncInFlight) return _syncInFlight;
@@ -151,6 +156,8 @@ async function _runSync() {
         addRules.push(rule);
     }
 
+    const rulesKey = JSON.stringify(addRules);
+
     // We only touch IDs >= DYNAMIC_RULE_ID_BASE so static rule IDs (1, 2)
     // are never disturbed.
     let existing;
@@ -168,6 +175,10 @@ async function _runSync() {
     const removeRuleIds = existing
         .filter(r => r && typeof r.id === 'number' && r.id >= DYNAMIC_RULE_ID_BASE)
         .map(r => r.id);
+
+    if (rulesKey === _appliedRulesKey && removeRuleIds.length === addRules.length) {
+        return;
+    }
 
     console.log(
         `pdf_viewer: existing dynamic ids`,
@@ -226,6 +237,9 @@ async function _runSync() {
             skipped
         );
     }
+    // Remember the set only when it went in whole; a partial install retries
+    // on the next sync.
+    _appliedRulesKey = skipped.length === 0 ? rulesKey : null;
     console.log(
         `pdf_viewer: synced ${installed}/${addRules.length} cache entries ` +
         `(${removeRuleIds.length} stale rules removed, ${skipped.length} skipped)`
@@ -284,9 +298,76 @@ async function navigateTab({ from_url, to_url }) {
     }
 }
 
+// Fetch signals — the convert script's curl download hit an auth wall
+// (Cloudflare Access, campus SSO) because curl has none of the browser's
+// cookies. Fetch the same URL here, where the session lives, and hand the
+// bytes back through the daemon. Only URLs open in one of this browser's tabs
+// are fetched, so a signal cannot make the extension read arbitrary pages.
+const _handledFetchIds = new Set();
+
+// Resolves true when the daemon still wants this result.
+async function putFetchResult(id, body, headers) {
+    const resp = await fetch(`${DAEMON}/fetch/${id}`, { method: 'PUT', headers, body });
+    if (!resp.ok) return false;
+    const answer = await resp.json().catch(() => ({}));
+    return answer.accepted !== false;
+}
+
+async function fetchSourceForDaemon({ id, url }) {
+    if (_handledFetchIds.has(id)) return;
+    _handledFetchIds.add(id);
+    const tabs = await chrome.tabs.query({});
+    if (!tabs.some(t => t.url === url)) {
+        console.log(`pdf_viewer: fetch signal — no tab with URL ${url}`);
+        return;
+    }
+    try {
+        // After a service-worker restart the signal cursor starts at 0 and
+        // recent fetch signals replay. The daemon refuses the acknowledgement
+        // for a fetch that is finished, expired or claimed by another browser;
+        // skip the download then.
+        if (!(await putFetchResult(id, '', { 'X-Fetch-Started': '1' }))) {
+            console.log(`pdf_viewer: fetch ${id} no longer pending — skipped`);
+            return;
+        }
+        const resp = await fetch(url, { credentials: 'include', cache: 'no-store' });
+        const contentType = resp.headers.get('content-type') || '';
+        if (!resp.ok) {
+            throw new Error(`browser fetch got HTTP ${resp.status}`);
+        }
+        const body = await resp.arrayBuffer();
+        const magic = new TextDecoder().decode(new Uint8Array(body, 0, Math.min(4, body.byteLength)));
+        if (magic !== '%PDF') {
+            throw new Error(
+                `browser fetch got ${contentType || 'unknown content'}, not a PDF ` +
+                `(signed out of ${new URL(url).host}?)`
+            );
+        }
+        await putFetchResult(id, body, {
+            'X-Source-Content-Type': contentType,
+            'X-Source-Content-Disposition': resp.headers.get('content-disposition') || '',
+        });
+        console.log(`pdf_viewer: fetched ${body.byteLength} bytes for ${url}`);
+    } catch (e) {
+        console.warn('pdf_viewer: source fetch failed —', e.message);
+        try {
+            // Header values must be Latin-1; keep the message printable ASCII.
+            const reason = String(e.message).replace(/[^\x20-\x7e]/g, '?');
+            await putFetchResult(id, '', { 'X-Fetch-Error': reason || 'fetch failed' });
+        } catch (_) {
+            // Daemon gone; the script times out and reports that instead.
+        }
+    }
+}
+
 async function handleDaemonSignal(sig) {
     if (sig && sig.type === 'sync_rules') {
         await syncCachedRules();
+        return;
+    }
+    if (sig && sig.type === 'fetch') {
+        // Not awaited: a large download must not stall navigation signals.
+        fetchSourceForDaemon(sig);
         return;
     }
     await navigateTab(sig || {});

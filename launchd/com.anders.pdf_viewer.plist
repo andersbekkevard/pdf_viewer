@@ -26,18 +26,17 @@
     <key>Label</key>
     <string>com.anders.pdf_viewer</string>
 
+    <!--
+        Sync the daemon's venv, then exec uvicorn so it IS the job's process.
+        Under `uv run`, launchd's SIGTERM on restart reached uv but not its
+        uvicorn child, which lived on as an orphan still answering the
+        extension's long-poll.
+    -->
     <key>ProgramArguments</key>
     <array>
-        <string>/Users/andersbekkevard/.local/bin/uv</string>
-        <string>run</string>
-        <string>--directory</string>
-        <string>/Users/andersbekkevard/dev/misc/pdf_viewer/daemon</string>
-        <string>uvicorn</string>
-        <string>main:app</string>
-        <string>--host</string>
-        <string>127.0.0.1</string>
-        <string>--port</string>
-        <string>7435</string>
+        <string>/bin/sh</string>
+        <string>-c</string>
+        <string>/Users/andersbekkevard/.local/bin/uv sync --directory /Users/andersbekkevard/dev/misc/pdf_viewer/daemon --quiet &amp;&amp; exec /Users/andersbekkevard/dev/misc/pdf_viewer/daemon/.venv/bin/uvicorn main:app --host 127.0.0.1 --port 7435</string>
     </array>
 
     <key>RunAtLoad</key>

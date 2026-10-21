@@ -86,6 +86,33 @@ class CatalogTest(unittest.TestCase):
             expected,
         )
 
+    def test_passthrough_marker_round_trips_without_reencoding_the_query(self):
+        signed = "https://cdn.example.com/a%20b.pdf?X-Sig=a%2Fb%3D&name=x+y&e=1"
+        marked = with_passthrough(signed)
+        self.assertEqual(marked, signed + "&_pdfvw=passthrough")
+        self.assertEqual(with_passthrough(marked), marked)
+        self.assertEqual(strip_passthrough(marked), signed)
+        self.assertEqual(strip_passthrough(signed), signed)
+        self.assertEqual(strip_passthrough("https://h/x.pdf?_pdfvw=passthrough"), "https://h/x.pdf")
+
+    def test_browser_url_resolution_covers_every_daemon_view_route(self):
+        pdf = pathlib.Path(self.temp.name) / "new.pdf"
+        pdf.write_bytes(b"pdf bytes")
+        expected = self.catalog.resolve_source(pdf).hash
+        remote = "https://example.com/a/b.pdf?sig=1&x=2"
+        for route in ("/view", "/view-light", "/view-canonical"):
+            with self.subTest(route=route):
+                self.assertEqual(
+                    self.catalog.hash_for_browser_url(f"http://localhost:7435{route}?path={pdf}"),
+                    expected,
+                )
+        for route in ("/view-raw", "/view-light-raw", "/view-canonical-raw"):
+            with self.subTest(route=route):
+                self.assertEqual(
+                    self.catalog.hash_for_browser_url(f"http://127.0.0.1:7435{route}?{remote}"),
+                    url_hash(remote),
+                )
+
     def test_malformed_and_duplicate_mappings_use_last_valid_row(self):
         _entry, canonical = self.add_entry(name="Old")
         renamed_path = canonical.with_name("Latest.html")
@@ -143,6 +170,17 @@ class CatalogTest(unittest.TestCase):
         self.assertIn("<title>-New-Name</title>", (entry / "-New-Name.html").read_text())
         self.assertEqual(self.catalog.mappings()[HASH].html_path, entry / "-New-Name.html")
         self.assertEqual(self.activity.boosted, [(HASH, 3)])
+
+    def test_rename_href_keeps_the_light_representation(self):
+        entry, _canonical = self.add_entry()
+        (entry / "Book.light.html").write_text("<title>Book</title>", encoding="utf-8")
+        result = self.catalog.rename(HASH, "Renamed")
+        self.assertEqual(result["href"], f"/{HASH}/Renamed.light.html")
+        self.assertEqual(result["canonical_href"], f"/{HASH}/Renamed.html")
+
+    def test_rename_href_is_canonical_without_light(self):
+        self.add_entry()
+        self.assertEqual(self.catalog.rename(HASH, "Renamed")["href"], f"/{HASH}/Renamed.html")
 
     def test_rename_refuses_existing_canonical_or_light_target(self):
         entry, _canonical = self.add_entry()
