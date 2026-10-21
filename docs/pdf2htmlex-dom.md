@@ -124,6 +124,18 @@ our purposes, `.t` elements are:
 - What `Selection.focusNode.parentElement` returns (usually; sometimes
   it's a nested `<span>` inside a `.t`)
 
+Geometry: a `.t` box's bottom edge is the PDF baseline and its `h*` height is
+the font ascent. The `ff*` class sets `line-height` to ascent − descent, and
+the embedded font's own metrics carry the same numbers, so the browser puts
+the baseline exactly on the box bottom. The line box is what a selection
+highlight paints. Since ADR 0013 the converter derives ascent/descent from the
+glyphs the document uses, clamped to 1.0 em / −0.35 em, so a line box stays
+text-sized even when a glyph (a TeX delimiter, picture-mode line art) paints
+far outside it. Don't use a `.t` rect as a glyph's ink bounds.
+
+A text line can have `visibility:hidden` while a font-class span inside it has
+`visibility:visible`, which wins. To hide all HTML text, hide `.t *` too.
+
 Production light-v1 cache variants (`<stem>.light.html`) use
 `data-pdf2html-text-mode="paint-safe"`: only `.t` lines proved hidden fallback
 text by conservative document-local CSS visibility semantics may be simplified

@@ -1,0 +1,4 @@
+# PDFs are binary even when a producer writes them as plain text.
+*.pdf binary
+# Unified-diff context lines keep their leading space on blank lines.
+*.patch -whitespace

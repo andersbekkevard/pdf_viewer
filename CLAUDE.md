@@ -183,7 +183,9 @@ explicitly.
   binary is missing. Docker is no longer needed for conversion — see
   ADR 0011. The binary depends on Homebrew dylibs + `/opt/homebrew/share/poppler`
   at runtime; if a `brew upgrade` breaks linkage, rebuild in the v2 tree
-  and re-run the installer.
+  and re-run the installer. The binary carries the text-fidelity patches in
+  `patches/pdf2htmlEX/` (ADR 0013, `+pdfv` version); a rebuild must apply
+  them and pass `scripts/tests/test_text_fidelity.py`.
 - **Vimium reserves many keys; never invent a new overlay keybinding
   without checking `docs/keybindings.md`.** When in doubt, add a
   palette command instead.

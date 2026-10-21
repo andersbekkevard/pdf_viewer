@@ -128,6 +128,11 @@ else
         *"pdf2htmlEX version"*)
             poppler_ver="$(printf '%s\n' "$ver_out" | sed -n 's/.*poppler[[:space:]]*\([0-9.]*\).*/\1/p' | head -1)"
             pass "native pdf2htmlEX binary: ${ver_line} (poppler ${poppler_ver:-unknown})"
+            case "$ver_line" in
+                *"+pdfv"*) ;;
+                *) warn "pdf2htmlEX lacks the text-fidelity patches (doubled letters, oversized selection boxes)" \
+                        "rebuild with patches/pdf2htmlEX, see ADR 0013" ;;
+            esac
             ;;
         *)
             fail "pdf2htmlEX --version unexpected: ${ver_line:-<empty>}" \

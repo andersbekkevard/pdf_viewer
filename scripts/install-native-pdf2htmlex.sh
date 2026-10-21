@@ -192,6 +192,12 @@ case "$ver" in
     *"pdf2htmlEX version"*) say "Version check: $ver" ;;
     *) die "version check failed: $ver" ;;
 esac
+# ADR 0013: production conversion needs the text-fidelity patches
+# (patches/pdf2htmlEX/), which a patched build stamps as a +pdfv version.
+case "$ver" in
+    *"+pdfv"*) ;;
+    *) warn "unpatched pdf2htmlEX: Type 3 pages draw doubled letters and some fonts get oversized selection boxes; rebuild with patches/pdf2htmlEX (ADR 0013)" ;;
+esac
 
 if [ -f "$TEST_PDF" ]; then
     tmp_out="$(mktemp -d "${TMPDIR:-/tmp}/p2h-install-selftest.XXXXXX")"

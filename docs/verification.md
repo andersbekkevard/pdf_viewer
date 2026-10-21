@@ -136,3 +136,21 @@ A bead is done only when all three are true:
 2. The owning docs are updated or explicitly not affected.
 3. The bead has a verification comment with the command/browser flow and result.
 
+## Text-layer fidelity regression
+
+`scripts/tests/test_text_fidelity.py` converts the committed fixtures in
+`test/fixtures/text-fidelity/` (rebuild them with its `build.sh`) with the
+native binary and measures the HTML with `scripts/measure-text-fidelity.sh`.
+It fails on doubled glyphs (raster and opaque HTML ink coinciding), on text ink
+hidden by a full-page selection painted with the overlay's `::selection`, on
+line boxes over 1.4 em, and on a `covered-text desync` converter warning (ADR
+0013). It is part of the script suite and skips without the binary or a cached
+Playwright. Run it after any converter rebuild or Homebrew upgrade, and against
+a candidate build with `PDF2HTMLEX_BIN=<path>`.
+
+The local corpus in `test/corpus-text-fidelity.tsv` (Type 3, substituted
+base-14, TeX math and control documents, split in-sample/held-out) runs with
+`PDF_VIEWER_TEXT_CORPUS=1` and prints a table; missing documents are skipped.
+To inspect one conversion, `scripts/measure-text-fidelity.sh <file.html>
+--pages 1,2 --save <dir>` writes the raster-only, text-only and selected
+screenshots it measured.

@@ -63,9 +63,14 @@ html, body, #page-container {
 
 /* Must be two separate rules: if ::-moz-selection is in a comma list with
    ::selection, Chromium treats the whole selector list as invalid and drops
-   the rule — text selection falls back to the Chrome-blue default. */
-::selection     { background: #99C1DA; color: #1a1816; }
-::-moz-selection { background: #99C1DA; color: #1a1816; }
+   the rule — text selection falls back to the Chrome-blue default.
+   Translucent, not opaque: each .t line paints its own highlight, and a later
+   line's highlight lands on top of earlier lines wherever glyph ink extends
+   past its line box (tall delimiters, picture-mode glyphs, text over figures).
+   On white this is exactly #99C1DA; over ink it leaves the ink readable.
+   scripts/measure-text-fidelity.cjs measures occlusion with this rule. */
+::selection     { background: rgba(0, 100, 163, 0.4); color: #1a1816; }
+::-moz-selection { background: rgba(0, 100, 163, 0.4); color: #1a1816; }
 
 /* Search activated an active hit: the Selection we set for Vimium's V to
    latch onto would otherwise paint blue over our orange custom highlight
