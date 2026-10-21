@@ -73,7 +73,7 @@ position restore, …).
    back to the original URL (native viewer takes over, degraded but not
    broken), and the user runs Raycast-convert to escalate. Next visit of the
    same doc hits cache forever.
-5. **Overlay is the product.** `assets/overlay.{js,css}` is what the user
+5. **Overlay is the product.** `assets/overlay*.js` and `assets/overlay.css` is what the user
    actually experiences. Served live via symlink — edits reload on ⌘⇧R,
    no reconversion needed.
 6. **Keyboard first.** All numeric arguments go through the `:` palette,
@@ -89,7 +89,12 @@ All core phases done (1 → 7). What works end-to-end today:
   and `https://` sources (signed Blackboard/S3/CloudFront URLs included;
   query string stripped from the cache key so signed links hit cache
   across sessions). Filename recovered from `Content-Disposition` or
-  URL path.
+  URL path. Sources behind a browser sign-in (Cloudflare Access, campus
+  SSO) defeat the direct `curl` download, which has no cookies; the script
+  then asks the extension to fetch the URL inside the signed-in browser
+  session (`POST /signal/fetch`, bytes handed back through daemon memory,
+  only for URLs open in a tab). A changed `extension/background.js` needs a
+  reload in `chrome://extensions` before it runs.
 - **Overlay injection** — `scripts/inject-overlay.py`, shared between
   fresh conversions and bulk upgrades. Idempotent.
 - **Bulk upgrade** — `scripts/upgrade-cache.sh --mode={inject,reconvert,light}`.
@@ -161,11 +166,15 @@ What's not built: cross-device access over Tailscale (phase 8, optional).
 
 ```
 pdf_viewer/
-├── assets/overlay*.js           # composition root + library/navigation/text/command/finger modules
+├── assets/overlay.js            # composition root: wires the overlay-*.js concept modules
+├── assets/overlay-*.js          # prefs, document model, zoom, pdf2htmlEX adapter, navigation,
+│                                # sidebar, search, scrolloff, commands, settings, finger, …
 ├── assets/overlay.css           # the overlay styles
 ├── scripts/
+│   ├── lib/pipeline.sh          # shared cache layout + conversion steps (sourced)
 │   ├── pdf2html-convert.sh      # convert: single PDF (file or url)
-│   ├── index-directory.sh       # index: recursive directory walk
+│   ├── index-directory.sh       # index: recursive directory walk (1 worker)
+│   ├── index-directory-parallel.sh  # index with N workers
 │   ├── upgrade-cache.sh         # bulk re-inject / re-convert
 │   ├── externalize-page-images.py
 │   │                            # build low-memory .light.html variants
@@ -297,20 +306,22 @@ the migration window.
 | `Ctrl-j` / `Ctrl-k` · `↓` / `↑` | Sidebar selector up/down; `Enter` jumps |
 | `Ctrl-f` | Finger visible URL / DOI / ISBN / long-ID tokens |
 | `/` / `s` | Find in visible pages                       |
-| `A`      | Toggle render-all pages                      |
 | `e` / `q` / `E` | Next / prev page; active text selection extends pagewise |
+| `c` / `C` | Next / prev chapter                        |
+| `⌘+` / `⌘−` / `⌘0` | Zoom in / out / fit-width        |
 | `⌘⇧.`    | Toggle page counter                          |
 | `:`      | Open command palette                         |
-| `⌘K`     | Library picker (palette seeded with `:open `)|
+| `⌘K`     | Quick-open: sections, cached documents, commands |
+| `⌘,`     | Settings                                     |
 | `?`      | Cheatsheet (needs Vimium `?` disabled on `localhost:7435`) |
-| `Esc`    | Close palette → cheatsheet → clear selection |
+| `Esc`    | Close the topmost overlay, then the sidebar, then clear selection |
 
 Palette: `:42`, `:p 42`, `:chapter <name>`, `:next` / `:prev`,
 `:mark <a-z>`, `:jump <a-z>`, `:clear <a-z>`, `:open <doc>` / `:o`,
-`:pin`, `:scrolloff 25` / `:so 25`, `:buffer 20` / `:buf 20`, `:all`,
+`:rename <name>`, `:path`, `:disable`, `:delete confirm`,
+`:pin`, `:scrolloff 25` / `:so 25`, `:case`, `:zoom N | auto`,
 `:yank <ref|page|chapter|document>` / `:y`, `:finger` / `:f`,
-`:counter` / `:num`,
-`:help` / `:h`.
+`:counter` / `:num`, `:set`, `:help` / `:h`.
 
 Full key + palette registry (including the Vimium-reserved keys we
 deliberately *don't* bind): [`docs/keybindings.md`](docs/keybindings.md).
@@ -330,18 +341,18 @@ deliberately *don't* bind): [`docs/keybindings.md`](docs/keybindings.md).
 
 ## Testing
 
-No automated tests. Verify by running the Raycast shortcut on a local PDF
-and inspecting behavior in Comet. Logs at `~/.cache/pdf_viewer/log` —
-`tail -f` to watch live. When something's off, run `scripts/doctor.sh` for a
-read-only PASS/FAIL diagnosis of the whole chain (daemon, symlink, toolchain).
+Run the relevant existing automated checks and surface proof in
+[`docs/verification.md`](docs/verification.md). Comet/Raycast integration still needs its real
+host application. `scripts/doctor.sh` provides a read-only diagnosis of the daemon, asset
+symlink and native toolchain.
 
-**Overlay-only changes** (most common): edit `assets/overlay.{js,css}`,
+**Overlay-only changes** (most common): edit `assets/overlay*.js` and `assets/overlay.css`,
 ⌘⇧R in an already-open converted tab. Symlink-served, no reconversion.
 
 **Script / injection changes**: `trash ~/.cache/pdf_viewer/<hash>/` to
 force re-conversion next run. The `<script src=…?v=<hash>>` query-string
 cache-buster is derived automatically by `scripts/inject-overlay.py`
-from a content hash of `assets/overlay.{js,css}`, so editing either
+from a content hash of `assets/overlay*.js` and `assets/overlay.css`, so editing any overlay
 asset self-busts it — no manual version bump. Already-cached HTML with a
 stale `?v=` also self-corrects, since the daemon serves `/_assets/*`
 with an ETag and a short `max-age` that forces revalidation.

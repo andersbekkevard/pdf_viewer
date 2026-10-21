@@ -1,37 +1,22 @@
 # Verification
 
-This project has no standing automated test suite. Agents must still prove
-their work with a narrow verification loop before closing a bead.
+Use the existing automated checks and a narrow real-surface verification loop before
+closing a bead. Tests live in `daemon/tests/` and `scripts/tests/`; they use temporary data.
+Run the relevant suite through `uv` with its declared dependencies. For current discovery:
 
-## Available verification surfaces
+```bash
+uv run --directory daemon python -m unittest discover -s tests
+uv run python -m unittest discover -s scripts/tests
+```
 
-- **Codex Browser plugin**: preferred for interactive/local browser checks when
-  available. It can open `localhost`, inspect the DOM, press keys, click, type,
-  and capture screenshots in the in-app browser.
-- **Playwright CLI skill**: terminal fallback for headed browser automation and
-  repeatable UI flows. Use the bundled wrapper instead of adding a repo
-  dependency:
+## Verification surfaces
 
-  ```bash
-  export CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
-  export PWCLI="$CODEX_HOME/skills/playwright/scripts/playwright_cli.sh"
-
-  "$PWCLI" open http://localhost:7435 --headed
-  "$PWCLI" snapshot
-  "$PWCLI" press "Meta+F"
-  "$PWCLI" screenshot
-  ```
-
-- **Manual Comet/Raycast checks**: required when the behavior depends on the
-  Comet extension, Vimium, Raycast script commands, or the Comet LLM sidebar.
-  Browser automation can support these checks, but it cannot replace a
-  Comet-only surface.
-- **Daemon probes**: use `curl`, logs, and direct route checks for server/cache
-  behavior.
-
-Do not add Playwright, Vitest, or browser-test dependencies to this repo unless
-a bead explicitly asks for a durable automated test suite. For ad hoc
-automation, use the existing Codex/Playwright tools.
+For browser operation, use the installed `anders-environment` skill and its browser reference.
+Use the available browser tooling for real converted HTML and screenshots. Comet extension,
+Vimium, Raycast and the Comet LLM sidebar require those actual surfaces; a standalone browser
+check cannot establish their integration. Daemon/cache behavior can also use curl and logs.
+Use existing browser tools for ad hoc verification; add a durable test dependency only when
+the task calls for it.
 
 ## Session checklist
 
@@ -60,7 +45,7 @@ Before closing a bead:
 
 ```bash
 git diff --check
-br comments add <id> --message "Verification: <what was checked and result>"
+br comments add <id> "Verification: <what was checked and result>"
 br close <id> --reason "Completed"
 br sync --flush-only
 ```
@@ -71,7 +56,7 @@ blocker, what was attempted, and the exact missing artifact or user action.
 ## Overlay smoke test (standard pre-close check for overlay beads)
 
 `scripts/smoke-viewer.sh` is the standard pre-close check for any bead that
-touches `assets/overlay.{js,css}`. It is a single command that exits non-zero
+touches `assets/overlay*.js` or `assets/overlay.css`. It is a single command that exits non-zero
 on any failure:
 
 ```bash
@@ -97,6 +82,17 @@ Use the smallest proof that exercises the changed behavior:
 - **Overlay UI / keyboard work**: open a real converted PDF through
   `localhost:7435`, perform the key sequence or pointer action, and confirm the
   visible state with Browser/Playwright screenshot or DOM snapshot.
+- **Overlay behavior (any `assets/overlay*` change)**: run
+  `scripts/verify-overlay.sh <viewer-path>` against a cached document with an
+  outline and internal links (e.g. `/<hash>/<stem>.light.html`), and once
+  against a short paper. Groups (`--only geometry,navigation,sidebar,commands,search`)
+  cover Vimium-sized steps and zoom (ADR 0012), page and chapter jump landing,
+  marks and resume, sidebar keyboard commits, palette commands, preferences,
+  settings, the cheatsheet and `/` search. Real Vimium speed still needs Comet.
+- **Conversion pipeline (`scripts/lib/pipeline.sh` and its callers)**: run
+  `uv run python -m unittest discover -s scripts/tests`, then index a small
+  folder with `scripts/index-directory.sh` and check the summary line, the new
+  entry's HTML, `.light.html`, `meta.json`, `thumbs/` and its `mappings.tsv` row.
 - **Native browser find**: use a large converted PDF, open native Cmd-F, search
   for text outside the initially visible pages, press Enter through matches, and
   confirm the active highlight is visible on the expected page. Check normal
@@ -154,3 +150,29 @@ base-14, TeX math and control documents, split in-sample/held-out) runs with
 To inspect one conversion, `scripts/measure-text-fidelity.sh <file.html>
 --pages 1,2 --save <dir>` writes the raster-only, text-only and selected
 screenshots it measured.
+
+## Raster lifecycle regression
+
+Run `node scripts/tests/test_raster_lifecycle.cjs` for repeated proximity,
+entry/exit, multi-raster readiness, stale completion and failure/re-entry
+coverage. This deterministic contract complements the real-book verification;
+it does not establish renderer memory, scroll latency or Vimium integration.
+For fallback-selection changes, compare real selected-page screenshots at
+fit-width, 100% and 200%, and assert exact copied text and visible far-find
+highlights. Retain before/after physical-footprint and frame-time measurements
+from the same book and representation before claiming a performance fix.
+
+## Prepared startup and font regression
+
+Run `node scripts/tests/test_early_runtime.cjs` to assert one visible-page
+measurement for a 606-page input, preserved private Page methods, numbering,
+CTM/inverse CTM, idempotence and fail-closed metadata. The script suite includes
+`test_prepare_light_runtime.py` for exact font bytes, deduplication, unchanged
+text paint markup, mixed dimensions, invalid metadata and canonical-file guards.
+
+For actual input, compare baseline and prepared idle/selected screenshots at
+fit width, 100% and 200%, assert copied text against a known passage, and find
+a term on a distant page before and after reload. Measure a fresh browser's
+whole process set together with attributable serving memory; a renderer-only
+number is not the total-memory gate. Report cold and warm usable load through
+mounted controls, fonts, first-page raster readiness and two animation frames.
